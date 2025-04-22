@@ -1,0 +1,2 @@
+pyinstaller --onefile --runtime-tmpdir ".tmp" --noconsole extract_and_generate_cfg.py
+pyinstaller --onefile --runtime-tmpdir ".tmp" LPInputsPush.py
