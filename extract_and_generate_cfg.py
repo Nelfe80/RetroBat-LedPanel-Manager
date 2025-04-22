@@ -29,6 +29,7 @@ def generate_input_cfg(rom_name):
     log(f"🎮 Traitement de {rom_name}...")
 
     try:
+        # Exécute MAME avec les chemins relatifs
         args = [
             MAME_EXE, rom_name,
             "-skip_gameinfo", "-noreadconfig", "-nowindow",
@@ -44,7 +45,6 @@ def generate_input_cfg(rom_name):
             "-homepath", "..\\..\\bios\\mame",
             "-ctrlrpath", "..\\..\\saves\\mame\\ctrlr"
         ]
-
         subprocess.run(args, cwd=os.path.dirname(MAME_EXE), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         dump_file = os.path.join(os.path.dirname(MAME_EXE), "dump_inputs.txt")
@@ -53,6 +53,7 @@ def generate_input_cfg(rom_name):
             return
 
         entries = []
+        seen = set()
         with open(dump_file, "r", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("FIELD:"):
@@ -62,6 +63,10 @@ def generate_input_cfg(rom_name):
                         type_code = label.upper().replace(" ", "_")
                         tag = parts[2]
                         mask = parts[3]
+                        key = (tag, type_code, mask)
+                        if key in seen:
+                            continue
+                        seen.add(key)
                         entries.append({
                             "type": type_code,
                             "tag": tag,
@@ -69,6 +74,7 @@ def generate_input_cfg(rom_name):
                             "defvalue": mask
                         })
 
+        # Écriture du fichier
         with open(output_file, "w", encoding="utf-8") as out:
             out.write('<?xml version="1.0"?>\n')
             out.write('<mameconfig version="10">\n')
