@@ -35,16 +35,18 @@ def parse_es_event(path):
 def load_es_input(path):
     tree = ET.parse(path)
     es_maps = []
+    # priorité joystick
     for inputcfg in tree.findall('.//inputConfig'):
         if inputcfg.get('type') != 'joystick':
             continue
         mapping = {}
         for inp in inputcfg.findall('input'):
             name = inp.get('name').upper()
-            idx = int(inp.get('id'))
+            idx = int(inp.get('id')) if inp.get('id').isdigit() else 0
             kind = inp.get('type')
             mapping[name] = (idx, kind)
         es_maps.append(mapping)
+    # fallback clavier
     if not es_maps:
         for inputcfg in tree.findall('.//inputConfig'):
             if inputcfg.get('type') == 'keyboard':
@@ -78,7 +80,8 @@ def detect_max_player(ports):
 
 def load_layout(game, btn_count):
     xml = os.path.join(ARCADE_XML_DIR, f"{game}.xml")
-    for layout in ET.parse(xml).findall('.//layout'):
+    tree = ET.parse(xml)
+    for layout in tree.findall('.//layout'):
         if layout.get('panelButtons') == str(btn_count):
             return layout
     raise ValueError(f"No layout for {btn_count} buttons in {game}")
@@ -107,12 +110,6 @@ def indent(elem, level=0):
 
 
 def add_direction(parent, port, es_map, player_num, players_count):
-    """
-    Insère les directions de joystick en choisissant :
-     - JOYCODE_HAT{player}{DIR} si ES type=hat
-     - JOYCODE_{axis}_{DIR}_SWITCH si axis et 1 joueur
-     - JOYCODE_{player}_{axis}_{DIR}_SWITCH si axis et multi-joueurs
-    """
     orig_type = port.get('type', '').upper()
     mask = port.get('mask')
     tag = port.get('tag')
@@ -126,7 +123,7 @@ def add_direction(parent, port, es_map, player_num, players_count):
         return
     direction = parts[1]
 
-    # priorité au hat pour chaque direction si présent
+    # priorité au hat si dispo
     kind = None
     if direction in es_map and es_map[direction][1] == 'hat':
         kind = 'hat'
@@ -151,22 +148,28 @@ def add_direction(parent, port, es_map, player_num, players_count):
             seq.text = f"JOYCODE_{axis_name}_{direction}_SWITCH"
 
 
-def add_button(parent, port, es_map, ctrl, player_num):
-    idx, kind = es_map.get(ctrl, (None, None))
-    orig = port.get('type', '').upper()
-    letter_map = {chr(64 + i): i for i in range(1, 9)}
-    new_type = orig
-    if orig.startswith(f"P{player_num}_") and orig.split('_')[1].isalpha():
-        letter = orig.split('_', 1)[1]
-        btn_idx = letter_map.get(letter)
-        if btn_idx:
-            new_type = f"P{player_num}_BUTTON{btn_idx}"
+def add_button(parent, port, btn, es_map, player_num):
+    """
+    Injecte un bouton en se basant sur l'attribut 'physical' du layout.
+    """
+    phys = int(btn.get('physical'))
+    ctrl = btn.get('controller').upper()
+
+    tag  = port.get('tag')
     mask = port.get('mask')
-    port_el = ET.SubElement(parent, 'port', tag=port.get('tag'), type=new_type, mask=mask, defvalue=mask)
+    pfx  = f"P{player_num}"
+    port_el = ET.SubElement(
+        parent, 'port',
+        tag=tag,
+        type=f"{pfx}_BUTTON{phys}",
+        mask=mask,
+        defvalue=mask
+    )
     seq = ET.SubElement(port_el, 'newseq', type='standard')
-    if kind == 'button' and idx is not None:
-        # Correction du pattern: underscore après JOYCODE
-        seq.text = f"JOYCODE_{player_num}_BUTTON{idx+1}"
+
+    idx, kind = es_map.get(ctrl, (None, None))
+    if kind == 'button':
+        seq.text = f"JOYCODE_{pfx}_BUTTON{phys}"
     elif kind == 'key':
         seq.text = f"KEYCODE_{ctrl}"
     else:
@@ -192,10 +195,12 @@ def write_cfg(game, es_maps, ports, layout):
 
     cfg_ini = configparser.ConfigParser()
     cfg_ini.read(PANEL_CONFIG_INI)
-    players_count = min(cfg_ini.getint('Panel', 'players_count', fallback=1), len(es_maps))
-    letter_map = {chr(64 + i): i for i in range(1, 9)}
+    players_count = min(
+        cfg_ini.getint('Panel', 'players_count', fallback=1),
+        len(es_maps)
+    )
 
-    # Directions
+    # Directions inchangées
     for player_num in range(1, players_count + 1):
         es_map = es_maps[player_num - 1]
         for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
@@ -211,17 +216,28 @@ def write_cfg(game, es_maps, ports, layout):
             else:
                 logger.debug(f"No port for direction {key}")
 
-    # Buttons
+    # Buttons par joueur
     for player_num in range(1, players_count + 1):
         es_map = es_maps[player_num - 1]
+        btn_count = cfg_ini.getint(
+            'Panel',
+            f'Player{player_num}_buttons_count',
+            fallback=cfg_ini.getint('Panel', 'buttons_count', fallback=6)
+        )
+        layout = load_layout(game, btn_count)
+
         for btn in layout.findall('button'):
             gb = btn.get('gameButton').upper()
             if gb == 'NONE':
                 continue
-            if gb in letter_map:
+            if gb in ('A','B','C','D','E','F','G','H'):
                 port_key = f"P{player_num}_{gb}"
             elif gb == 'START':
-                port_key = next((k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START") if k in ports_by_type), None)
+                port_key = next(
+                    (k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START")
+                     if k in ports_by_type),
+                    None
+                )
             elif gb == 'COIN':
                 port_key = f"COIN_{player_num}"
             else:
@@ -231,11 +247,8 @@ def write_cfg(game, es_maps, ports, layout):
                 logger.error(f"Missing port for key {port_key}")
                 continue
 
-            ctrl = btn.get('controller').upper()
-            if ctrl not in es_map:
-                logger.debug(f"Controller {ctrl} not present for player {player_num}")
-                continue
-            add_button(inp, ports_by_type[port_key], es_map, ctrl, player_num)
+            port = ports_by_type[port_key]
+            add_button(inp, port, btn, es_map, player_num)
 
     indent(root)
     tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
@@ -261,9 +274,9 @@ class GameHandler(FileSystemEventHandler):
         try:
             ports = load_mame_ports(os.path.join(MAME_CFG_DIR, f"{game}_inputs.cfg"))
             es_maps = load_es_input(ES_INPUT_CFG)
-            layout = load_layout(game, btn_count)
+            # layout loaded inside write_cfg per joueur
             backup_cfg(game)
-            write_cfg(game, es_maps, ports, layout)
+            write_cfg(game, es_maps, ports, layout=None)
             self.last_game = game
         except Exception:
             logger.exception("Erreur lors de l'injection de layout")
