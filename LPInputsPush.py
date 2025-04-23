@@ -1,15 +1,4 @@
-"""
-RetroBat Arcade Layout Injector
-Dynamically rewrites MAME .cfg inputs on game‑selection.
-Sources:
- • es_input.cfg       → EmulationStation button‑to‑ID mapping
- • <game>_inputs.cfg  → MAME port definitions (type, masks)
- • <game>.xml         → Arcade layout metadata (positions, colors, functions)
- • config.ini         → Physical panel button count & players count & manual mapping
-Backups original <game>.cfg to <game>_backup.cfg.
-"""
 import os
-import re
 import time
 import shutil
 import logging
@@ -34,12 +23,6 @@ logger.setLevel(logging.DEBUG)
 # ——— Helpers ———
 
 def parse_es_event(path):
-    """
-    Lit ESEvent.arg et renvoie (emulator, rom_basename).
-    Ex:
-      event=game-selected&param1="mame"&param2=".../mslug.zip"&param3="..."
-      → ("mame", "mslug")
-    """
     data = open(path, encoding='utf-8').read().strip()
     parts = [p for p in data.split('&') if '=' in p]
     params = dict(p.split('=', 1) for p in parts)
@@ -48,28 +31,50 @@ def parse_es_event(path):
     game     = os.path.splitext(os.path.basename(rompath))[0]
     return emulator, game
 
+
 def load_es_input(path):
-    """
-    Retourne un dict mapping contrôleur → (id:int, type:str)
-    type ∈ {'button','key','axis'}
-    """
     tree = ET.parse(path)
-    es_map = {}
-    for inp in tree.findall('.//input'):
-        name = inp.get('name').upper()
-        idx  = int(inp.get('id'))
-        kind = inp.get('type')
-        es_map[name] = (idx, kind)
-    return es_map
+    es_maps = []
+    for inputcfg in tree.findall('.//inputConfig'):
+        if inputcfg.get('type') != 'joystick':
+            continue
+        mapping = {}
+        for inp in inputcfg.findall('input'):
+            name = inp.get('name').upper()
+            idx = int(inp.get('id'))
+            kind = inp.get('type')
+            mapping[name] = (idx, kind)
+        es_maps.append(mapping)
+    if not es_maps:
+        for inputcfg in tree.findall('.//inputConfig'):
+            if inputcfg.get('type') == 'keyboard':
+                mapping = {}
+                for inp in inputcfg.findall('input'):
+                    name = inp.get('name').upper()
+                    idx = int(inp.get('id')) if inp.get('id').isdigit() else 0
+                    kind = inp.get('type')
+                    mapping[name] = (idx, kind)
+                es_maps.append(mapping)
+                break
+    return es_maps
+
 
 def load_mame_ports(path):
     tree = ET.parse(path)
     return tree.findall('.//port')
 
+
 def detect_max_player(ports):
-    nums = [int(m.group(1)) for p in ports
-            if (m := re.match(r'^P(\d+)_', p.get('type','')))]
+    nums = []
+    for p in ports:
+        t = p.get('type', '')
+        parts = t.split('_', 1)
+        if parts[0].startswith('P') and parts[0][1:].isdigit():
+            nums.append(int(parts[0][1:]))
+        elif parts[0].isdigit():
+            nums.append(int(parts[0]))
     return max(nums) if nums else 1
+
 
 def load_layout(game, btn_count):
     xml = os.path.join(ARCADE_XML_DIR, f"{game}.xml")
@@ -78,6 +83,7 @@ def load_layout(game, btn_count):
             return layout
     raise ValueError(f"No layout for {btn_count} buttons in {game}")
 
+
 def backup_cfg(game):
     src = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
     dst = os.path.join(MAME_CFG_DIR, f"{game}_backup.cfg")
@@ -85,41 +91,6 @@ def backup_cfg(game):
         shutil.copy2(src, dst)
         logger.info(f"Backup {src} → {dst}")
 
-def build_button_map(max_player):
-    bm = {}
-    letters = {i: chr(64 + i) for i in range(1, 9)}
-    for n in range(1, 9):
-        letter = letters[n]
-        patterns = []
-        for p in range(1, max_player + 1):
-            patterns.append(fr'^P{p}[_\-]?BUTTON[_\-]?{n}$')
-            patterns.append(fr'^P{p}[_\-]?{letter}$')
-        patterns += [fr'^BUTTON[_\-]?{n}$', fr'^{letter}$']
-        bm[str(n)] = patterns
-        bm[letter]    = patterns
-    rng = f"1-{max_player}"
-    bm['START'] = [
-        fr'^(?:P[{rng}]_)?PLAYER[_\-]?START$',
-        fr'^[{rng}]_PLAYER[_\-]?START$',
-    ]
-    bm['COIN'] = [
-        fr'^(?:P[{rng}]_)?COIN[_\-]?1$',
-        fr'^(?:P[{rng}]_)?COIN[_\-]?2$',
-    ]
-    return bm
-
-def find_port(ports, patterns):
-    types = [p.get('type','') for p in ports]
-    logger.debug("Ports disponibles: %s", types)
-    for pat in patterns:
-        logger.debug("  → test pattern %r", pat)
-        rg = re.compile(pat, re.IGNORECASE)
-        for p in ports:
-            if rg.match(p.get('type','')):
-                logger.debug("    ✅ matched %r", p.get('type'))
-                return p
-    logger.error("    ❌ aucun port trouvé pour patterns: %s", patterns)
-    return None
 
 def indent(elem, level=0):
     i = "\n" + "    " * level
@@ -134,68 +105,142 @@ def indent(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
-def insert_ports(tree, ports, es_map, layout, button_map):
-    root   = tree.getroot()
-    system = root.find('.//system')
-    # remove existing <input>
-    for old in system.findall('input'):
-        system.remove(old)
-    bgfx = system.find('bgfx')
-    inp  = ET.Element('input')
-    if bgfx is not None:
-        idx = list(system).index(bgfx)
-        system.insert(idx, inp)
-    else:
-        system.append(inp)
 
-    # joystick directions for all players
-    cfg = configparser.ConfigParser()
-    cfg.read(PANEL_CONFIG_INI)
-    players_count = cfg.getint('Panel', 'players_count', fallback=1)
-    for pnum in range(1, players_count + 1):
-        prefix = f"P{pnum}_"
-        for port in ports:
-            t = port.get('type','').upper()
-            parts = t.split('_', 1)
-            if t.startswith(prefix) and parts[1] in ('UP','DOWN','LEFT','RIGHT'):
-                add_port(inp, port, es_map)
+def add_direction(parent, port, es_map, player_num, players_count):
+    """
+    Insère les directions de joystick en choisissant :
+     - JOYCODE_HAT{player}{DIR} si ES type=hat
+     - JOYCODE_{axis}_{DIR}_SWITCH si axis et 1 joueur
+     - JOYCODE_{player}_{axis}_{DIR}_SWITCH si axis et multi-joueurs
+    """
+    orig_type = port.get('type', '').upper()
+    mask = port.get('mask')
+    tag = port.get('tag')
 
-    # custom buttons from layout
-    for btn in layout.findall('button'):
-        ctrl = btn.get('controller','').upper()
-        gb   = btn.get('gameButton')
-        if ctrl not in es_map:
-            logger.info(f"Ignored {gb} (controller {ctrl} absent du pad)")
-            continue
-        logger.debug("Traitement gameButton=%r avec controller=%r", gb, ctrl)
-        patterns = button_map.get(gb, [])
-        p = find_port(ports, patterns)
-        if p is not None:
-            add_port(inp, p, es_map, ctrl)
-        else:
-            logger.error("Port manquant pour gameButton=%r", gb)
+    port_el = ET.SubElement(parent, 'port', tag=tag, type=orig_type, mask=mask, defvalue=mask)
+    seq = ET.SubElement(port_el, 'newseq', type='standard')
 
-def add_port(parent, port, es_map, ctrl=None):
-    tag, typ, mask = port.get('tag'), port.get('type'), port.get('mask')
-    el  = ET.SubElement(parent, 'port', tag=tag, type=typ, mask=mask, defvalue=mask)
-    seq = ET.SubElement(el, 'newseq', type='standard')
-    if not ctrl or ctrl not in es_map:
+    parts = orig_type.split('_', 1)
+    if len(parts) != 2 or parts[1] not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+        seq.text = ''
         return
-    idx, kind = es_map[ctrl]
-    if kind == 'button':
-        seq.text = f"JOYCODE_BUTTON{idx+1}"
+    direction = parts[1]
+
+    # priorité au hat pour chaque direction si présent
+    kind = None
+    if direction in es_map and es_map[direction][1] == 'hat':
+        kind = 'hat'
+    else:
+        axis_key = f"JOYSTICK{player_num}{direction}"
+        if axis_key in es_map and es_map[axis_key][1] == 'axis':
+            kind = 'axis'
+
+    if kind == 'hat':
+        seq.text = f"JOYCODE_HAT{player_num}{direction}"
+    elif kind == 'axis':
+        axis_name = 'XAXIS' if direction in ('LEFT', 'RIGHT') else 'YAXIS'
+        if players_count > 1:
+            seq.text = f"JOYCODE_{player_num}_{axis_name}_{direction}_SWITCH"
+        else:
+            seq.text = f"JOYCODE_{axis_name}_{direction}_SWITCH"
+    else:
+        axis_name = 'YAXIS' if direction in ('UP', 'DOWN') else 'XAXIS'
+        if players_count > 1:
+            seq.text = f"JOYCODE_{player_num}_{axis_name}_{direction}_SWITCH"
+        else:
+            seq.text = f"JOYCODE_{axis_name}_{direction}_SWITCH"
+
+
+def add_button(parent, port, es_map, ctrl, player_num):
+    idx, kind = es_map.get(ctrl, (None, None))
+    orig = port.get('type', '').upper()
+    letter_map = {chr(64 + i): i for i in range(1, 9)}
+    new_type = orig
+    if orig.startswith(f"P{player_num}_") and orig.split('_')[1].isalpha():
+        letter = orig.split('_', 1)[1]
+        btn_idx = letter_map.get(letter)
+        if btn_idx:
+            new_type = f"P{player_num}_BUTTON{btn_idx}"
+    mask = port.get('mask')
+    port_el = ET.SubElement(parent, 'port', tag=port.get('tag'), type=new_type, mask=mask, defvalue=mask)
+    seq = ET.SubElement(port_el, 'newseq', type='standard')
+    if kind == 'button' and idx is not None:
+        # Correction du pattern: underscore après JOYCODE
+        seq.text = f"JOYCODE_{player_num}_BUTTON{idx+1}"
     elif kind == 'key':
         seq.text = f"KEYCODE_{ctrl}"
     else:
         seq.text = ''
 
-def write_cfg(game, es_map, ports, layout, button_map):
-    cfg  = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
-    tree = ET.parse(cfg)
-    insert_ports(tree, ports, es_map, layout, button_map)
-    indent(tree.getroot())
-    tree.write(cfg, encoding='utf-8', xml_declaration=True)
-    logger.info(f"Wrote {cfg}")
+
+def write_cfg(game, es_maps, ports, layout):
+    cfg_path = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
+    tree = ET.parse(cfg_path)
+    root = tree.getroot()
+    system = root.find('.//system')
+    old = system.find('input')
+    if old is not None:
+        system.remove(old)
+    inp = ET.Element('input')
+    bgfx = system.find('bgfx') or system.find('bgfg')
+    if bgfx is not None:
+        system.insert(list(system).index(bgfx), inp)
+    else:
+        system.append(inp)
+
+    ports_by_type = {p.get('type'): p for p in ports}
+
+    cfg_ini = configparser.ConfigParser()
+    cfg_ini.read(PANEL_CONFIG_INI)
+    players_count = min(cfg_ini.getint('Panel', 'players_count', fallback=1), len(es_maps))
+    letter_map = {chr(64 + i): i for i in range(1, 9)}
+
+    # Directions
+    for player_num in range(1, players_count + 1):
+        es_map = es_maps[player_num - 1]
+        for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+            key = f"P{player_num}_{dir}"
+            if key in ports_by_type:
+                add_direction(
+                    inp,
+                    ports_by_type[key],
+                    es_map,
+                    player_num,
+                    players_count
+                )
+            else:
+                logger.debug(f"No port for direction {key}")
+
+    # Buttons
+    for player_num in range(1, players_count + 1):
+        es_map = es_maps[player_num - 1]
+        for btn in layout.findall('button'):
+            gb = btn.get('gameButton').upper()
+            if gb == 'NONE':
+                continue
+            if gb in letter_map:
+                port_key = f"P{player_num}_{gb}"
+            elif gb == 'START':
+                port_key = next((k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START") if k in ports_by_type), None)
+            elif gb == 'COIN':
+                port_key = f"COIN_{player_num}"
+            else:
+                port_key = None
+
+            if not port_key or port_key not in ports_by_type:
+                logger.error(f"Missing port for key {port_key}")
+                continue
+
+            ctrl = btn.get('controller').upper()
+            if ctrl not in es_map:
+                logger.debug(f"Controller {ctrl} not present for player {player_num}")
+                continue
+            add_button(inp, ports_by_type[port_key], es_map, ctrl, player_num)
+
+    indent(root)
+    tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
+    logger.info(f"Wrote {cfg_path}")
+
 
 class GameHandler(FileSystemEventHandler):
     def __init__(self):
@@ -205,39 +250,24 @@ class GameHandler(FileSystemEventHandler):
         if event.is_directory or os.path.basename(event.src_path) != os.path.basename(ES_EVENT_FILE):
             return
         emulator, game = parse_es_event(ES_EVENT_FILE)
-        if emulator != 'mame':
-            logger.debug("Skipped event for emulator '%s'", emulator)
-            return
-        if not game or game == self.last_game:
+        if emulator != 'mame' or game == self.last_game:
             return
 
-        # load config.ini
-        cfg_ini       = configparser.ConfigParser()
+        cfg_ini = configparser.ConfigParser()
         cfg_ini.read(PANEL_CONFIG_INI)
-        btn_count     = cfg_ini.getint('Panel', 'buttons_count', fallback=6)
-        players_count = cfg_ini.getint('Panel', 'players_count', fallback=1)
+        btn_count = cfg_ini.getint('Panel', 'buttons_count', fallback=6)
 
-        # load es_input and apply manual mapping overrides
-        es_map = load_es_input(ES_INPUT_CFG)
-        if cfg_ini.has_section('Mapping'):
-            for ctrl, val in cfg_ini.items('Mapping'):
-                if val.strip():
-                    key = ctrl.upper()
-                    forced = int(val.strip())
-                    es_map[key] = (forced, 'button')
-
-        logger.info("Selected MAME game: %s", game)
+        logger.info(f"Selected MAME game: {game}")
         try:
-            ports        = load_mame_ports(os.path.join(MAME_CFG_DIR, f"{game}_inputs.cfg"))
-            detected_max = detect_max_player(ports)
-            max_p        = min(detected_max, players_count)
-            button_map   = build_button_map(max_p)
-            layout       = load_layout(game, btn_count)
+            ports = load_mame_ports(os.path.join(MAME_CFG_DIR, f"{game}_inputs.cfg"))
+            es_maps = load_es_input(ES_INPUT_CFG)
+            layout = load_layout(game, btn_count)
             backup_cfg(game)
-            write_cfg(game, es_map, ports, layout, button_map)
+            write_cfg(game, es_maps, ports, layout)
             self.last_game = game
         except Exception:
             logger.exception("Erreur lors de l'injection de layout")
+
 
 def main():
     if not os.path.exists(ES_EVENT_FILE):
@@ -252,6 +282,7 @@ def main():
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+
 
 if __name__ == '__main__':
     main()
