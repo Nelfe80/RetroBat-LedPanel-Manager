@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<system name="dreamcast">
+  <layouts>
+    <layout panelButtons="2" type="2-Button">
+      <joystick color="White"/>
+      <button id="1" physical="1" controller="A" retropad_id="8" gameButton="NONE" function="A" x="30" y="60" color="Red"/>
+      <button id="2" physical="2" controller="B" retropad_id="0" gameButton="NONE" function="B" x="50" y="60" color="Blue"/>
+      <button id="START" physical="3" controller="START" retropad_id="3" gameButton="START" function="START" x="85" y="90" color="Gray"/>
+      <button id="COIN" physical="4" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Black"/>
+    </layout>
+    <layout panelButtons="4" type="4-Button">
+      <joystick color="White"/>
+      <button id="1" physical="1" controller="A" retropad_id="8" gameButton="NONE" function="A" x="30" y="60" color="Red"/>
+      <button id="2" physical="2" controller="B" retropad_id="0" gameButton="NONE" function="B" x="50" y="60" color="Blue"/>
+      <button id="3" physical="3" controller="X" retropad_id="9" gameButton="NONE" function="X" x="30" y="40" color="Yellow"/>
+      <button id="4" physical="4" controller="Y" retropad_id="1" gameButton="NONE" function="Y" x="50" y="40" color="Green"/>
+      <button id="START" physical="5" controller="START" retropad_id="3" gameButton="START" function="START" x="85" y="90" color="Gray"/>
+      <button id="COIN" physical="6" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Black"/>
+    </layout>
+    <layout panelButtons="6" type="6-Button">
+      <joystick color="White"/>
+      <button id="1" physical="1" controller="A" retropad_id="8" gameButton="NONE" function="A" x="30" y="60" color="Red"/>
+      <button id="2" physical="2" controller="B" retropad_id="0" gameButton="NONE" function="B" x="50" y="60" color="Blue"/>
+      <button id="3" physical="6" controller="PAGEDOWN" retropad_id="11" gameButton="NONE" function="None" x="70" y="60" color="Gray"/>
+      <button id="4" physical="3" controller="X" retropad_id="9" gameButton="NONE" function="X" x="30" y="40" color="Yellow"/>
+      <button id="5" physical="4" controller="Y" retropad_id="1" gameButton="NONE" function="Y" x="50" y="40" color="Green"/>
+      <button id="6" physical="5" controller="PAGEUP" retropad_id="10" gameButton="NONE" function="None" x="70" y="40" color="Gray"/>
+      <button id="START" physical="7" controller="START" retropad_id="3" gameButton="START" function="START" x="85" y="90" color="Gray"/>
+      <button id="COIN" physical="8" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Black"/>
+    </layout>
+    <layout panelButtons="8" type="8-Button">
+      <joystick color="White"/>
+      <button id="1" physical="1" controller="A" retropad_id="8" gameButton="NONE" function="A" x="30" y="60" color="Red"/>
+      <button id="2" physical="2" controller="B" retropad_id="0" gameButton="NONE" function="B" x="50" y="60" color="Blue"/>
+      <button id="3" physical="6" controller="PAGEDOWN" retropad_id="11" gameButton="NONE" function="None" x="70" y="60" color="Gray"/>
+      <button id="4" physical="8" controller="R2" retropad_id="13" gameButton="NONE" function="R2" x="90" y="60" color="Black"/>
+      <button id="5" physical="3" controller="X" retropad_id="9" gameButton="NONE" function="X" x="30" y="40" color="Yellow"/>
+      <button id="6" physical="4" controller="Y" retropad_id="1" gameButton="NONE" function="Y" x="50" y="40" color="Green"/>
+      <button id="7" physical="5" controller="PAGEUP" retropad_id="10" gameButton="NONE" function="None" x="70" y="40" color="Gray"/>
+      <button id="8" physical="7" controller="L2" retropad_id="12" gameButton="NONE" function="L2" x="90" y="40" color="Black"/>
+      <button id="START" physical="9" controller="START" retropad_id="3" gameButton="START" function="START" x="85" y="90" color="Gray"/>
+      <button id="COIN" physical="10" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Black"/>
+    </layout>
+  </layouts>
+</system>

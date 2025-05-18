@@ -1,0 +1,152 @@
+Il y a des roms de contrôle inputs (megadrive/snes)
+IL y a un fichier avec les bases de données des  périphériques / controllers supportés par RetroBat : C:\RetroBatV7\system\tools\gamecontrollerdb.txt
+
+Mon controler :
+03000000790000000600000000000000,ARC Controller - Digital Mode,platform:Windows,a:b0,b:b1,x:b3,y:b2,back:b9,start:b8,leftshoulder:b4,rightshoulder:b5,dpup:-a1,dpdown:+a1,dpleft:-a0,dpright:+a0,leftstick:b6,rightstick:b7,
+J'ai inversé la corresopndance physique x:b3,y:b2 car le mapping de RetroBat c'est :
+Y X L1 L2
+A B R1 R2
+
+Dans OPTIONS choisir dans ADVANCES SYSTEM OPTION > CONTROLS >
+Pour la megadrive, CONTROLLER TYPE > JOYPAD 6 BUTTONS
+Pour la nes, rotate button à ON et turbo à ON
+Pour la 3ds : dans ADVANCES SYSTEM OPTION > EMULATOR > CITRA LIBRETO RETROARCH
+		??!!! boutons non actifs :
+		input_player1_btn_l3 = "15"
+		input_player1_btn_r3 = "-1"
+		pas de zl ar alors que dans tatoo oui
+		input_player1_btn_l2 = "12" 
+		input_player1_btn_r4 = "13"
+Pour la dreamcast : USE R1 & L1 (else R2 & L2)
+Pour la Gamecube et la Wii, configurer le controller dans Dolphin d'abord.
+Pour la PSX, charger le .elf de l'émulateur et aller dans controller de l'émulateur pour activer le SDL puis configurer le controller.
+Pour la PS2 et PS3 il faut installer le elf ou le pkg
+
+FBNEO (LIBRETO) - NEOGEO
+Prenons le panel de base RB :
+Y X L L2
+A B R R2
+
+Actuellement :
+
+
+Le AUTO / CLASSIC qui pourrait être renommé CLASSIC ARCADE - NEO GEO 4 ALIGN BUTTONS
+A B C D (pour ceux qui ont que 4 boutons alignés)
+ou pour ceux qui ont 2 lignes de 2 pour 4 buttons
+C D
+A B
+
+Le "Modern" pourrait être renommé "Modern - NeoGeo Mini 4 Buttons"
+A C
+B D
+
+Le "6 Buttons"
+D
+A B C
+Mais cela ne correspond à rien j'ai l'impression..
+
+Je propose donc un "6 BUTONS" NeoGeo Variation
+B C D
+A - -
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 1 - BOTTOM"
+- - - -
+A B C D
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 1"
+A B C D
+- - - - 
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 2" (mon préféré)
+- B C D
+A - - -
+
+Ce qui correspond en id RetroPad à :
+1 9 10 12
+8 0 11 13
+
+Et en boutton :
+Y->1 X->9 L1->10 L2->12 
+A->8 B->0 R1->11 R2->13
+10  0  1  9
+8  11  12 13
+
+8=A
+0=B
+9=X
+1=Y
+
+2->START
+3->SELECT
+input_player1_btn_x = "8"
+input_player1_btn_y = "0"
+input_player1_btn_l = "1"
+input_player1_btn_l2 = "9"
+
+
+Au début du fichier rmp, pour fixer le mapping de base : 
+input_libretro_device_p1 = "1"
+
+Un "4 BUTTONS - NEOGEO MINI"
+A C - -
+B D - -
+input_player1_btn_a = "9"
+input_player1_btn_b = "8"
+input_player1_btn_y = "0"
+input_player1_btn_x = "1"
+input_player1_btn_l = "10"
+input_player1_btn_l2 = "11"
+input_player1_btn_r = "12"
+input_player1_btn_r2 = "13"
+
+Un "6 BUTTONS - NEOGEO VARIATION"
+B C D
+A - -
+
+input_player1_btn_a = "11"
+input_player1_btn_y = "8"
+input_player1_btn_x = "1"
+input_player1_btn_l = "9"
+input_player1_btn_l2 = "13"
+input_player1_btn_r2 = "12"
+input_player1_btn_b = "0"
+input_player1_btn_r = "10"
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 1"
+A B C D
+- - - - 
+input_player1_btn_x = "8"
+input_player1_btn_y = "0"
+input_player1_btn_l = "1"
+input_player1_btn_l2 = "9"
+input_player1_btn_a = "10"
+input_player1_btn_b = "11"
+input_player1_btn_r = "12"
+input_player1_btn_r2 = "13"
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 1 - BOTTOM"
+- - - -
+A B C D
+input_player1_btn_x = "10"
+input_player1_btn_y = "11"
+input_player1_btn_l = "12"
+input_player1_btn_l2 = "13"
+input_player1_btn_a = "8"
+input_player1_btn_b = "0"
+input_player1_btn_r = "1"
+input_player1_btn_r2 = "9"
+
+Un "8 BUTTONS - NEOGEO MVS TYPE 2"
+- B C D
+A - - -
+input_player1_btn_x = "8"
+input_player1_btn_y = "10"
+input_player1_btn_l = "1"
+input_player1_btn_l2 = "9"
+input_player1_btn_a = "11"
+input_player1_btn_b = "0"
+input_player1_btn_r = "12"
+input_player1_btn_r2 = "13"
+
+
+
