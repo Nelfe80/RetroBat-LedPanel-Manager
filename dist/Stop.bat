@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Vérifier et fermer LPInputsPush.exe si en cours d'exécution
-tasklist | find /I "LPInputsPush.exe" > NUL
-if not errorlevel 1 taskkill /IM LPInputsPush.exe /F
+:: Vérifier et fermer LPEvents.exe si en cours d'exécution
+tasklist | find /I "LPEvents.exe" > NUL
+if not errorlevel 1 taskkill /IM LPEvents.exe /F
 
 endlocal

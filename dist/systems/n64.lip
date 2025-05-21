@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<layout game="Nintendo64" version="1.0">
+
+  <!-- 3) Réactions aux inputs physiques -->
+  <events type="8-Button">
+    <!-- Quand on appuie sur B8 (R2), on allume en jaune les 4 C-buttons -->
+    <event type="input" button="B8" trigger="press">
+      <macro type="set_panel_colors">
+        <!-- positions B1, B2, B3, B4 (C-up, C-down, C-left, C-right) -->
+        <colors>CURRENT,B1:YELLOW;B2:YELLOW;B3:YELLOW;B4:YELLOW;B5:GRAY;B6:GRAY;B9:GRAY;B10:RED;B7:GREY</colors>
+      </macro>
+    </event>
+
+    <!-- Quand on relâche R2, on restaure l'état initial -->
+    <event type="input" button="B8" trigger="release">
+      <macro type="restore_panel">
+        <panel>CURRENT</panel>
+      </macro>
+    </event>
+  </events>
+
+</layout>

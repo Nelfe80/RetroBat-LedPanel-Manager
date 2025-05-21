@@ -3,17 +3,17 @@ setlocal enabledelayedexpansion
 :: force good folder
 cd /d %~dp0
 
-:: Vérifier et fermer LPInputsPush.exe si en cours d'exécution
-tasklist | find /I "LPInputsPush.exe" > NUL
-if not errorlevel 1 taskkill /IM LPInputsPush.exe /F
+:: Vérifier et fermer LPEvents.exe si en cours d'exécution
+tasklist | find /I "LPEvents.exe" > NUL
+if not errorlevel 1 taskkill /IM LPEvents.exe /F
 
 :: Supprimer le dossier .temp contenant les anciennes instances du LedPanelManager
 rd /s /q ".\.tmp"
 
-:: Démarrer LPInputsPush.exe
-start LPInputsPush.exe
+:: Démarrer LPEvents.exe
+start LPEvents.exe
 timeout /t 1 /nobreak >NUL
-tasklist | find /I "LPInputsPush.exe" > NUL
+tasklist | find /I "LPEvents.exe" > NUL
 timeout /t 1 /nobreak >NUL
 
 :: Démarrer retrobat.exe
