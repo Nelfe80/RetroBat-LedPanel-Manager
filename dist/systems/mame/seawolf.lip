@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<layout game="SeaWolf" version="1.0">
+
+  <!-- 2) Mappings statiques lampes → boutons -->
+  <lamps>
+    <lamp output="TORP_LAMP_1" type="indicator" panel="1" button="B3" color="RED"/>
+    <lamp output="TORP_LAMP_2" type="indicator" panel="1" button="B4" color="RED"/>
+    <lamp output="TORP_LAMP_3" type="indicator" panel="1" button="B5" color="RED"/>
+    <lamp output="TORP_LAMP_4" type="indicator" panel="1" button="B8" color="RED"/>
+    <lamp output="FIRE_LAMP"  type="button"    panel="1" button="B1" pressAction="B1" color="ORANGE"/>
+    <lamp output="READY_LAMP" type="indicator" panel="1" button="—"  color="GREEN"  pressAction="none"/>
+    <lamp output="RELOAD_LAMP"type="indicator" panel="1" button="—"  color="YELLOW" pressAction="none"/>
+  </lamps>
+
+  <!-- 3) Groupes (compteurs dynamiques) -->
+  <groups>
+    <group name="Torpedoes" panel="1">
+      <members>B3,B4,B5,B8</members>
+      <mapping output="TORP_COUNT" max="4"/>
+    </group>
+  </groups>
+
+  <!-- 4) Réactions immédiates aux sorties du jeu -->
+  <events>
+    <event output="READY_LAMP" trigger="on">
+      <macro type="blink_panel">
+        <color>WHITE</color><duration>800</duration><interval>200</interval>
+      </macro>
+    </event>
+    <event output="RELOAD_LAMP" trigger="on">
+      <macro type="fade_button">
+        <button>B1</button><color>BLUE</color><duration>500</duration>
+      </macro>
+    </event>
+  </events>
+
+  <!-- 5) Cycle de vie (sélection, démarrage, fin, idle) -->
+  <lifecycle>
+    <on event="gameSelected">
+      <macro type="breath">
+        <color>WHITE</color><duration>1500</duration>
+      </macro>
+    </on>
+    <on event="gameStart">
+      <macro type="set_panel"><color>BLACK</color></macro>
+    </on>
+    <on event="gameEnd">
+      <macro type="rainbow"><panels>ALL</panels><step>100</step><loops>3</loops></macro>
+    </on>
+    <on event="idle">
+      <macro type="wave"><color>BLUE</color><direction>right</direction><step>150</step><loops>0</loops></macro>
+    </on>
+  </lifecycle>
+
+  <!-- 6) Séquences temporelles complexes -->
+  <sequences>
+
+    <sequence name="TripleTorpedo" window="1500">
+      <steps>
+        <step output="TORP_LAMP" state="on"/>
+        <step output="TORP_LAMP" state="off"/>
+        <step output="TORP_LAMP" state="on"/>
+        <step output="TORP_LAMP" state="off"/>
+        <step output="TORP_LAMP" state="on"/>
+      </steps>
+      <macro type="chase">
+        <color>RED</color><direction>right</direction><duration>1000</duration>
+      </macro>
+    </sequence>
+
+    <sequence name="QuickReadyFlash" window="1000">
+      <steps>
+        <step output="READY_LAMP" state="on"/>
+        <step output="READY_LAMP" state="off"/>
+        <step output="READY_LAMP" state="on"/>
+      </steps>
+      <macro type="set_panel">
+        <color>GREEN</color>
+      </macro>
+    </sequence>
+
+    <sequence name="FullTorpedoes" window="2000">
+      <steps>
+        <step output="TORP_COUNT" state="0"/>
+        <step output="TORP_COUNT" state="4"/>
+      </steps>
+      <macro type="rainbow_cycle">
+        <group>Torpedoes</group><duration>2000</duration>
+      </macro>
+    </sequence>
+
+  </sequences>
+
+</layout>
