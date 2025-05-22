@@ -391,10 +391,22 @@ class LedEventHandler(FileSystemEventHandler):
         # 4) parser le .lip et vérifier le type (N-Button)
         try:
             lip_tree    = ET.parse(lip_path)
-            evroot      = lip_tree.getroot().find('events')
+            lip_root    = lip_tree.getroot()
+            evroot      = lip_root.find('events')
             if evroot is None:
                 logger.warning("No <events> in .lip")
                 return
+
+            # ** Nouveau : filtrage sur le name du layout **
+            lip_name = evroot.get('name')  # ex. "Arcade Shark"
+            current_layout = self.system_layouts[self.current_layout_idx]['name']
+            if lip_name and lip_name != current_layout:
+                logger.info(
+                    f"Skipping .lip events: .lip is for layout '{lip_name}' "
+                    f"but current layout is '{current_layout}'"
+                )
+                return
+
             lip_type    = evroot.get('type','')           # ex: "8-Button"
             lip_btn_cnt = int(lip_type.split('-',1)[0])
         except Exception as e:
@@ -469,6 +481,7 @@ class LedEventHandler(FileSystemEventHandler):
             count += 1
 
         logger.info(f"Total .lip events loaded: {count}")
+
 
 
 
