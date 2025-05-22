@@ -2,7 +2,7 @@
 <layout game="Nintendo64" version="1.0">
 
   <!-- 3) Réactions aux inputs physiques -->
-  <events type="8-Button">
+  <events type="8-Button" name="Arcade Shark">
     <!-- Quand on appuie sur B8 (R2), on allume en jaune les 4 C-buttons -->
     <event type="input" button="B8" trigger="press">
       <macro type="set_panel_colors">
