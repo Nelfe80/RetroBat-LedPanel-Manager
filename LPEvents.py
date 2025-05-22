@@ -126,6 +126,68 @@ class LedEventHandler(FileSystemEventHandler):
         self.listening     = False
         self.last_es_event = (None, None, None)
         self.lip_events    = []
+        self.system_layouts      = []    # Liste des layouts dispo pour le système courant
+        self.current_layout_idx  = 0     # Index du layout actif
+
+    def _load_system_layouts(self, system):
+        """Charge tous les <layout> du XML système et prépare self.system_layouts."""
+        # reconvertir 'c:\…\n64\…' en 'n64'
+        system_name = os.path.basename(system) if os.path.sep in system else system
+        xml_path = os.path.join(SYSTEMS_DIR, f"{system_name}.xml")
+        self.system_layouts = []
+        try:
+            tree = ET.parse(xml_path)
+            # on reconstruit phys_to_label comme dans _send_init_colors
+            cfg = configparser.ConfigParser()
+            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
+                cfg.read_file(f)
+            phys_to_label = {}
+            total = cfg.getint('Panel','buttons_count',fallback=0)
+            for i in range(1, total+1):
+                opt = f'panel_button_{i}'
+                if cfg.has_option('Panel', opt):
+                    phys_to_label[cfg.get('Panel', opt).rstrip(';')] = f"B{i}"
+            for opt,lab in [('panel_button_select','COIN'),
+                            ('panel_button_start','START'),
+                            ('panel_button_joy','JOY')]:
+                if cfg.has_option('Panel', opt):
+                    phys_to_label[cfg.get('Panel', opt).rstrip(';')] = lab
+
+            btn_cnt = cfg.getint('Panel','Player1_buttons_count',
+                                 fallback=cfg.getint('Panel','buttons_count',fallback=0))
+            players = cfg.getint('Panel','players_count',fallback=1)
+            panels  = '|'.join(str(i) for i in range(1, players+1))
+
+            for layout in tree.findall(f".//layout[@panelButtons='{btn_cnt}']"):
+                name = layout.get('name') or layout.get('type')
+                # recréer mapping bouton→couleur
+                mapping = []
+                if layout.find('joystick') is not None:
+                    c = layout.find('joystick').get('color', DEFAULT_COLOR).upper()
+                    mapping.append(f"JOY:{'OFF' if c=='BLACK' else c}")
+                for btn in layout.findall('button'):
+                    phys = btn.get('physical')
+                    idn  = btn.get('id','').upper()
+                    label = idn if idn in ('START','COIN','JOY') else phys_to_label.get(phys, f"B{phys}")
+                    c = btn.get('color', DEFAULT_COLOR).upper()
+                    mapping.append(f"{label}:{'OFF' if c=='BLACK' else c}")
+                cmd = f"SetPanelColors={panels},{';'.join(mapping)},default=yes\n"
+                self.system_layouts.append({'name': name, 'cmd': cmd})
+
+            logger.info(f"Loaded {len(self.system_layouts)} layouts for system '{system_name}': "+
+                        ', '.join(l['name'] for l in self.system_layouts))
+        except Exception as e:
+            logger.error(f"Error loading system layouts from {xml_path}: {e}")
+            self.system_layouts = []
+
+    def _send_current_layout(self):
+        """Envoie le layout LED courant (self.current_layout_idx)."""
+        if not self.system_layouts:
+            logger.warning("No system_layouts to send")
+            return
+        entry = self.system_layouts[self.current_layout_idx]
+        self.ser.write(entry['cmd'].encode('utf-8'))
+        logger.info(f"➡ Switched to layout [{self.current_layout_idx}] '{entry['name']}'")
 
     def on_modified(self, event):
         # --- DEBUG ENTRY ---
@@ -148,15 +210,18 @@ class LedEventHandler(FileSystemEventHandler):
         logger.info(f"Handling ES_EVENT: event={ev}, system={system}, raw2={raw2}")
         logger.debug(f"Listening={self.listening}, last_system={self.last_system}, lip_events_count={len(self.lip_events)}")
 
+        if ev == 'system-selected' and self.listening:
+            self.listening = False
+            logger.info("■ Exit de jeu détecté (system-selected) — stopped listening to .lip events.")
+
         # 1) system-selected or initial blank → init system lighting
         if ev in ('system-selected', '') and system != self.last_system:
             logger.info("→ Branch: system-selected / initial")
-            self._send_init_colors(system)
+            self._load_system_layouts(system)
+            self.current_layout_idx = 0
+            self._send_current_layout()
             self.last_system = system
-            logger.debug(f"After system-init: last_system={self.last_system}")
-            # clear any previous lip events on new system
             self.lip_events = []
-            logger.debug("Cleared lip_events on system change")
             return
 
         # 2) game-selected → set up colors + reload layout (game-specific or fallback)
@@ -215,7 +280,7 @@ class LedEventHandler(FileSystemEventHandler):
                 logger.warning(f"No layout found for system='{system}', game='{game}'")
                 # re-init system colors
                 self._send_init_colors(system)
-                logger.debug("Re-applied system colors after game-selected")                
+                logger.debug("Re-applied system colors after game-selected")
             # clear any lip events when switching games
             self.lip_events = []
             logger.debug("Cleared lip_events on game-selected")
@@ -323,38 +388,60 @@ class LedEventHandler(FileSystemEventHandler):
                 logger.info(f"No .lip file for game or system (tried {lip_path} and {fallback})")
                 return
 
-        # 4) parser le .lip
+        # 4) parser le .lip et vérifier le type (N-Button)
         try:
-            lip_tree = ET.parse(lip_path)
-            evroot   = lip_tree.getroot().find('events')
+            lip_tree    = ET.parse(lip_path)
+            evroot      = lip_tree.getroot().find('events')
             if evroot is None:
                 logger.warning("No <events> in .lip")
                 return
-            btn_count = evroot.get('type','').split('-',1)[0]
+            lip_type    = evroot.get('type','')           # ex: "8-Button"
+            lip_btn_cnt = int(lip_type.split('-',1)[0])
         except Exception as e:
             logger.error(f"Error parsing .lip header: {e}")
             return
 
-        # 5) charger le layout correspondant dans systems/<system_name>.xml
+        # 5) lire le panelButtons configuré dans config.ini
+        cfg = configparser.ConfigParser()
+        try:
+            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
+                cfg.read_file(f)
+        except Exception:
+            cfg.read(PANEL_CONFIG_INI)
+        panel_btn_cnt = cfg.getint(
+            'Panel',
+            'Player1_buttons_count',
+            fallback=cfg.getint('Panel','buttons_count',fallback=0)
+        )
+
+        # 6) si ça ne correspond pas, on skippe
+        if lip_btn_cnt != panel_btn_cnt:
+            logger.info(
+                f"Skipping .lip events: .lip is for {lip_btn_cnt}-Button "
+                f"but current panel has {panel_btn_cnt} buttons"
+            )
+            return
+
+        # 7) charger le layout correspondant dans systems/<system_name>.xml
         xml_path = os.path.join(SYSTEMS_DIR, f"{system_name}.xml")
         try:
-            layout = ET.parse(xml_path).find(f".//layout[@panelButtons='{btn_count}']")
+            layout = ET.parse(xml_path).find(f".//layout[@panelButtons='{lip_btn_cnt}']")
             if layout is None:
-                logger.warning(f"No layout[@panelButtons={btn_count}] in {system_name}.xml")
+                logger.warning(f"No layout[@panelButtons={lip_btn_cnt}] in {system_name}.xml")
                 return
         except Exception as e:
             logger.error(f"Error loading system XML: {e}")
             return
 
-        # 6) construire label→physical
+        # 8) construire label→physical
         label_to_phys = {'JOY': None}
         for btn in layout.findall('button'):
-            phys   = int(btn.get('physical'))
-            idn    = btn.get('id','').upper()
-            label  = idn if idn in ('START','COIN','JOY') else f"B{phys}"
+            phys  = int(btn.get('physical'))
+            idn   = btn.get('id','').upper()
+            label = idn if idn in ('START','COIN','JOY') else f"B{phys}"
             label_to_phys[label] = phys
 
-        # 7) extraire les <event> et peupler self.lip_events
+        # 9) extraire les <event> et peupler self.lip_events
         count = 0
         for ev in evroot.findall('event'):
             b   = ev.get('button','').upper()
@@ -386,45 +473,106 @@ class LedEventHandler(FileSystemEventHandler):
 
 
 
+
 def joystick_listener(handler):
+    import time
+    import pygame
+    from pygame.locals import JOYBUTTONDOWN, JOYBUTTONUP, JOYHATMOTION, JOYAXISMOTION
+
+    # Initialisation
     pygame.init()
     pygame.joystick.init()
-    joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-    for js in joysticks:
-        js.init()
-        logger.info(f"Joystick initialized: {js.get_name()} (Instance {js.get_instance_id()})")
+    logger.info("▶ joystick_listener thread started")
 
-    states = {js.get_instance_id(): {i: False for i in range(js.get_numbuttons())}
-              for js in joysticks}
+    # Détection des joysticks
+    joysticks = []
+    count = pygame.joystick.get_count()
+    logger.info(f"Detected {count} joystick(s)")
+    for i in range(count):
+        js = pygame.joystick.Joystick(i)
+        js.init()
+        joysticks.append(js)
+        logger.info(f"  • Initialized Joystick #{i}: {js.get_name()} (instance_id={js.get_instance_id()})")
+
+    # États des boutons
+    states = {
+        js.get_instance_id(): {btn: False for btn in range(js.get_numbuttons())}
+        for js in joysticks
+    }
+    # États des hats
+    hat_states = {js.get_instance_id(): (0, 0) for js in joysticks}
+
+    HOTKEY_ID = 9      # id du bouton "hotkey" dans es_input.cfg
+    AXIS_THRESHOLD = 0.5
 
     while True:
         for ev in pygame.event.get():
-            if ev.type in (pygame.JOYBUTTONDOWN, pygame.JOYBUTTONUP):
+            # Debug complet
+            logger.debug(f"← pygame event: {ev}")
+
+            # — Boutons press/release —
+            if ev.type in (JOYBUTTONDOWN, JOYBUTTONUP):
                 iid     = ev.instance_id
-                pressed = (ev.type == pygame.JOYBUTTONDOWN)
-                prev    = states[iid][ev.button]
+                pressed = (ev.type == JOYBUTTONDOWN)
+                prev    = states[iid].get(ev.button, None)
                 states[iid][ev.button] = pressed
 
-                if handler.listening and prev != pressed:
-                    panel    = handler.panel_id
-                    physical = ev.button + 1
-                    action   = 'pressed' if pressed else 'released'
-                    logger.info(f"  • Panel {panel} Button {physical} {action}")
+                logger.info(f"  • Panel {handler.panel_id} Button {ev.button+1} "
+                            f"{'pressed' if pressed else 'released'}")
 
-                    if not handler.lip_events:
-                        logger.info("No .lip events to process")
+                # Si en game-start, traiter .lip
+                if handler.listening and prev is not None and prev != pressed:
                     for le in handler.lip_events:
-                        logger.info(f"Checking .lip event {le}")
+                        logger.debug(f"    → Checking .lip event {le}")
                         if le['id'] == ev.button and le['trigger'] == ('press' if pressed else 'release'):
                             if le['macro'] == 'set_panel_colors':
-                                mapping = le['arg'].replace('CURRENT', str(panel))
+                                mapping = le['arg'].replace('CURRENT', str(handler.panel_id))
                                 cmd     = f"SetPanelColors={mapping}"
                             else:
-                                panel_arg = le['arg'].replace('CURRENT', str(panel))
+                                panel_arg = le['arg'].replace('CURRENT', str(handler.panel_id))
                                 cmd       = f"RestorePanel={panel_arg}"
-                            logger.info(f"➡ Executing macro command: {cmd}")
+                            logger.info(f"    ➡ Executing macro: {cmd}")
                             handler.ser.write((cmd + '\n').encode('utf-8'))
+
+            # — Hat (D-pad en hat) —
+            elif ev.type == JOYHATMOTION:
+                iid = ev.instance_id
+                x, y = ev.value
+                logger.info(f"  • Panel {handler.panel_id} Hat moved → {ev.value}")
+                # Hotkey + left/right hors game-start
+                if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                    if x == -1:
+                        handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
+                        logger.info("    ↶ Hotkey+Hat-Left → previous layout")
+                        handler._send_current_layout()
+                    elif x == 1:
+                        handler.current_layout_idx = (handler.current_layout_idx + 1) % len(handler.system_layouts)
+                        logger.info("    ↷ Hotkey+Hat-Right → next layout")
+                        handler._send_current_layout()
+
+            # — Axis (D-pad en axis 0/1) —
+            elif ev.type == JOYAXISMOTION:
+                iid  = ev.instance_id
+                axis = ev.axis
+                val  = ev.value
+                # On ne gère que l'axe 0 (gauche/droite)
+                if axis == 0 and abs(val) > AXIS_THRESHOLD:
+                    direction = 'Left' if val < 0 else 'Right'
+                    logger.info(f"  • Panel {handler.panel_id} Axis0 moved → {direction} ({val:.2f})")
+                    # Hotkey + left/right hors game-start
+                    if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                        if direction == 'Left':
+                            handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
+                            logger.info("    ↶ Hotkey+Axis-Left → previous layout")
+                        else:
+                            handler.current_layout_idx = (handler.current_layout_idx + 1) % len(handler.system_layouts)
+                            logger.info("    ↷ Hotkey+Axis-Right → next layout")
+                        handler._send_current_layout()
+
         time.sleep(0.01)
+
+
+
 
 def main():
     cfg = configparser.ConfigParser()
