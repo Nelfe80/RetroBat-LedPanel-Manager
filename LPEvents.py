@@ -30,6 +30,15 @@ ES_INPUT_FILE = os.path.join(_root, 'emulationstation', '.emulationstation', 'es
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+def _read_panel_cfg() -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser()
+    try:
+        with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as fh:
+            cfg.read_file(fh)
+    except Exception:
+        cfg.read(PANEL_CONFIG_INI)
+    return cfg
+
 def load_layout_buttons(system, btn_count, phys_to_label):
     xml_path = os.path.join(SYSTEMS_DIR, f"{system}.xml")
     if not os.path.exists(xml_path):
@@ -100,7 +109,7 @@ def load_game_layout_buttons(system, game_name, btn_count, phys_to_label):
     except Exception as e:
         logger.error(f"Error parsing game XML {path}: {e}")
         return []
-        
+
 def find_pico():
     logger.info("🔍 Scanning serial ports for Pico...")
     for port in serial.tools.list_ports.comports():
@@ -126,44 +135,69 @@ class LedEventHandler(FileSystemEventHandler):
         self.listening     = False
         self.last_es_event = (None, None, None)
         self.lip_events    = []
-        self.system_layouts      = []    # Liste des layouts dispo pour le système courant
-        self.current_layout_idx  = 0     # Index du layout actif
+        self.system_layouts     = []    # Liste des layouts dispo pour le système courant
+        self.current_layout_idx = 0     # Index du layout actif
+
+    def _get_saved_layout_idx(self, system: str) -> int:
+        cfg = _read_panel_cfg()
+        has_section = cfg.has_section('PanelDefaults')
+        logger.debug(f"Fetching saved layout for system '{system}'. Section exists? {has_section}")
+        if has_section:
+            try:
+                saved_name = cfg.get('PanelDefaults', system)
+                logger.debug(f"Saved name from config: '{saved_name}'")
+                names = [l.get('name') for l in self.system_layouts]
+                logger.debug(f"Current layout options: {names}")
+                for i, l in enumerate(self.system_layouts):
+                    if l.get('name') == saved_name:
+                        logger.debug(f"Matched saved layout '{saved_name}' at index {i}")
+                        return i
+            except Exception as e:
+                logger.debug(f"Error fetching saved layout: {e}")
+        logger.debug(f"No saved layout match for system '{system}', default to 0")
+        return 0
+
+    def _save_layout_idx(self, system: str, idx: int) -> None:
+        cfg = _read_panel_cfg()
+        if not cfg.has_section('PanelDefaults'):
+            cfg.add_section('PanelDefaults')
+            logger.debug("Created PanelDefaults section.")
+        name = ''
+        if 0 <= idx < len(self.system_layouts):
+            name = self.system_layouts[idx].get('name', '')
+        logger.debug(f"Saving idx {idx} (name '{name}') for system '{system}'")
+        cfg.set('PanelDefaults', system, name)
+        tmp = PANEL_CONFIG_INI + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            cfg.write(fh)
+        os.replace(tmp, PANEL_CONFIG_INI)
+        logger.debug(f"PanelDefaults section now: {dict(cfg.items('PanelDefaults'))}")
 
     def _load_system_layouts(self, system):
-        """Charge tous les <layout> du XML système et prépare self.system_layouts."""
-        # reconvertir 'c:\…\n64\…' en 'n64'
         system_name = os.path.basename(system) if os.path.sep in system else system
         xml_path = os.path.join(SYSTEMS_DIR, f"{system_name}.xml")
         self.system_layouts = []
         try:
             tree = ET.parse(xml_path)
-            # on reconstruit phys_to_label comme dans _send_init_colors
-            cfg = configparser.ConfigParser()
-            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
-                cfg.read_file(f)
+            cfg = _read_panel_cfg()
             phys_to_label = {}
             total = cfg.getint('Panel','buttons_count',fallback=0)
             for i in range(1, total+1):
                 opt = f'panel_button_{i}'
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = f"B{i}"
-            for opt,lab in [('panel_button_select','COIN'),
-                            ('panel_button_start','START'),
-                            ('panel_button_joy','JOY')]:
+            for opt, lab in [('panel_button_select','COIN'),('panel_button_start','START'),('panel_button_joy','JOY')]:
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = lab
-
-            btn_cnt = cfg.getint('Panel','Player1_buttons_count',
-                                 fallback=cfg.getint('Panel','buttons_count',fallback=0))
+            btn_cnt = cfg.getint('Panel','Player1_buttons_count',fallback=cfg.getint('Panel','buttons_count',fallback=0))
             players = cfg.getint('Panel','players_count',fallback=1)
             panels  = '|'.join(str(i) for i in range(1, players+1))
-
             for layout in tree.findall(f".//layout[@panelButtons='{btn_cnt}']"):
                 name = layout.get('name') or layout.get('type')
-                # recréer mapping bouton→couleur
                 mapping = []
-                if layout.find('joystick') is not None:
-                    c = layout.find('joystick').get('color', DEFAULT_COLOR).upper()
+                joy = layout.find('joystick')
+                if joy is not None:
+                    c = joy.get('color', DEFAULT_COLOR).upper()
                     mapping.append(f"JOY:{'OFF' if c=='BLACK' else c}")
                 for btn in layout.findall('button'):
                     phys = btn.get('physical')
@@ -173,17 +207,21 @@ class LedEventHandler(FileSystemEventHandler):
                     mapping.append(f"{label}:{'OFF' if c=='BLACK' else c}")
                 cmd = f"SetPanelColors={panels},{';'.join(mapping)},default=yes\n"
                 self.system_layouts.append({'name': name, 'cmd': cmd})
-
-            logger.info(f"Loaded {len(self.system_layouts)} layouts for system '{system_name}': "+
-                        ', '.join(l['name'] for l in self.system_layouts))
+            idx = self._get_saved_layout_idx(system_name)
+            if idx >= len(self.system_layouts):
+                logger.debug(f"Saved idx {idx} is out of bounds, resetting to 0")
+                idx = 0
+            self.current_layout_idx = idx
+            logger.debug(f"_load_system_layouts: using index {idx} for system '{system_name}'")
+            logger.info(f"Loaded {len(self.system_layouts)} layouts for '{system_name}': {', '.join(l['name'] for l in self.system_layouts)}")
         except Exception as e:
-            logger.error(f"Error loading system layouts from {xml_path}: {e}")
+            logger.error(f"Error loading layouts from {xml_path}: {e}")
             self.system_layouts = []
+            self.current_layout_idx = 0
 
     def _send_current_layout(self):
-        """Envoie le layout LED courant (self.current_layout_idx)."""
         if not self.system_layouts:
-            logger.warning("No system_layouts to send")
+            logger.warning("No layouts available to send")
             return
         entry = self.system_layouts[self.current_layout_idx]
         self.ser.write(entry['cmd'].encode('utf-8'))
@@ -200,7 +238,7 @@ class LedEventHandler(FileSystemEventHandler):
         # Parse the ES event
         ev, system, raw2 = parse_es_event(ES_EVENT_FILE)
         logger.info(f"Parsed ES_EVENT → ev='{ev}', system='{system}', raw2='{raw2}'")
-
+        logger.debug(f"on_modified event={event}, system={system}")
         current = (ev, system, raw2)
         if current == self.last_es_event:
             logger.debug("Duplicate ES_EVENT, skipping")
@@ -210,23 +248,19 @@ class LedEventHandler(FileSystemEventHandler):
         logger.info(f"Handling ES_EVENT: event={ev}, system={system}, raw2={raw2}")
         logger.debug(f"Listening={self.listening}, last_system={self.last_system}, lip_events_count={len(self.lip_events)}")
 
-        if ev == 'system-selected' and self.listening:
-            self.listening = False
-            logger.info("■ Exit de jeu détecté (system-selected) — stopped listening to .lip events.")
-
-        # 1) system-selected or initial blank → init system lighting
-        if ev in ('system-selected', '') and system != self.last_system:
-            logger.info("→ Branch: system-selected / initial")
+        # 1) system-selected
+        if ev == 'system-selected' and system != self.last_system:
             self._load_system_layouts(system)
-            self.current_layout_idx = 0
             self._send_current_layout()
+            self._save_layout_idx(system, self.current_layout_idx)
             self.last_system = system
             self.lip_events = []
             return
 
-        # 2) game-selected → set up colors + reload layout (game-specific or fallback)
-        if ev == 'game-selected':
+        # 2) game-selected
+        if ev == 'game-selected' and system == self.last_system:
             logger.info("→ Branch: game-selected")
+            # resolve game name
             from urllib.parse import unquote
             formatted = os.path.normpath(unquote(raw2))
             if os.path.isfile(formatted):
@@ -237,35 +271,24 @@ class LedEventHandler(FileSystemEventHandler):
                 game = os.path.splitext(os.path.basename(raw2))[0]
             logger.info(f"Resolved game name: '{game}'")
 
-            # build phys_to_label mapping
-            cfg = configparser.ConfigParser()
-            try:
-                with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
-                    cfg.read_file(f)
-            except Exception:
-                cfg.read(PANEL_CONFIG_INI)
+            # attempt game overlay or fallback
+            cfg = _read_panel_cfg()
             phys_to_label = {}
-            total = cfg.getint('Panel', 'buttons_count', fallback=0)
-            for i in range(1, total + 1):
+            total = cfg.getint('Panel','buttons_count',fallback=0)
+            for i in range(1, total+1):
                 opt = f'panel_button_{i}'
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = f"B{i}"
-            for opt, lab in [('panel_button_select','COIN'),
-                             ('panel_button_start','START'),
-                             ('panel_button_joy','JOY')]:
+            for opt, lab in [('panel_button_select','COIN'),('panel_button_start','START'),('panel_button_joy','JOY')]:
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = lab
+            btn_cnt = cfg.getint('Panel','Player1_buttons_count',fallback=cfg.getint('Panel','buttons_count',fallback=0))
 
-            btn_cnt = cfg.getint('Panel','Player1_buttons_count',
-                        fallback=cfg.getint('Panel','buttons_count',fallback=0))
-            # attempt game-specific layout
             btns = load_game_layout_buttons(system, game, btn_cnt, phys_to_label)
-            if btns:
-                logger.debug(f"Loaded game-specific layout: {btns}")
-            else:
-                logger.debug("No game-specific layout, falling back to system layout")
-                btns = load_layout_buttons(system, btn_cnt, phys_to_label)
-                logger.debug(f"System layout: {btns}")
+            logger.info(f"btns after load_game_layout_buttons: {btns}")
+            if not btns:
+                logger.info("Pas de layout jeu-spécifique, fallback sur layout système par défaut")
+                self._send_current_layout()
 
             if btns:
                 panels = '|'.join(str(i) for i in range(1, cfg.getint('Panel','players_count',fallback=1)+1))
@@ -273,17 +296,11 @@ class LedEventHandler(FileSystemEventHandler):
                 cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
                 try:
                     self.ser.write(cmd.encode('utf-8'))
-                    logger.info(f"➡ Sent (game-selected): {cmd.strip()}")
+                    logger.info(f"➡ Sent (game-selected overlay): {cmd.strip()}")
                 except Exception as e:
-                    logger.error(f"Error sending game-selected colors: {e}")
-            else:
-                logger.warning(f"No layout found for system='{system}', game='{game}'")
-                # re-init system colors
-                self._send_init_colors(system)
-                logger.debug("Re-applied system colors after game-selected")
-            # clear any lip events when switching games
+                    logger.error(f"Error sending game overlay: {e}")
             self.lip_events = []
-            logger.debug("Cleared lip_events on game-selected")
+            self.last_system = None
             return
 
         # 3) game-start → enable listening and load .lip macros
@@ -328,12 +345,7 @@ class LedEventHandler(FileSystemEventHandler):
 
 
     def _send_init_colors(self, system):
-        cfg = configparser.ConfigParser()
-        try:
-            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
-                cfg.read_file(f)
-        except:
-            cfg.read(PANEL_CONFIG_INI)
+        cfg = _read_panel_cfg()
 
         phys_to_label = {}
         total = cfg.getint('Panel','buttons_count',fallback=0)
@@ -414,12 +426,7 @@ class LedEventHandler(FileSystemEventHandler):
             return
 
         # 5) lire le panelButtons configuré dans config.ini
-        cfg = configparser.ConfigParser()
-        try:
-            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
-                cfg.read_file(f)
-        except Exception:
-            cfg.read(PANEL_CONFIG_INI)
+        cfg = _read_panel_cfg()
         panel_btn_cnt = cfg.getint(
             'Panel',
             'Player1_buttons_count',
@@ -481,10 +488,6 @@ class LedEventHandler(FileSystemEventHandler):
             count += 1
 
         logger.info(f"Total .lip events loaded: {count}")
-
-
-
-
 
 
 def joystick_listener(handler):
@@ -558,10 +561,14 @@ def joystick_listener(handler):
                         handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
                         logger.info("    ↶ Hotkey+Hat-Left → previous layout")
                         handler._send_current_layout()
+                        handler._save_layout_idx(handler.last_system or '', handler.current_layout_idx)
+
                     elif x == 1:
                         handler.current_layout_idx = (handler.current_layout_idx + 1) % len(handler.system_layouts)
                         logger.info("    ↷ Hotkey+Hat-Right → next layout")
                         handler._send_current_layout()
+                        handler._save_layout_idx(handler.last_system or '', handler.current_layout_idx)
+
 
             # — Axis (D-pad en axis 0/1) —
             elif ev.type == JOYAXISMOTION:
@@ -576,24 +583,18 @@ def joystick_listener(handler):
                     if not handler.listening and states[iid].get(HOTKEY_ID, False):
                         if direction == 'Left':
                             handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
+                            handler._save_layout_idx(handler.last_system or '', handler.current_layout_idx)
                             logger.info("    ↶ Hotkey+Axis-Left → previous layout")
                         else:
                             handler.current_layout_idx = (handler.current_layout_idx + 1) % len(handler.system_layouts)
+                            handler._save_layout_idx(handler.last_system or '', handler.current_layout_idx)
                             logger.info("    ↷ Hotkey+Axis-Right → next layout")
                         handler._send_current_layout()
 
         time.sleep(0.01)
 
-
-
-
 def main():
-    cfg = configparser.ConfigParser()
-    try:
-        with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as f:
-            cfg.read_file(f)
-    except:
-        cfg.read(PANEL_CONFIG_INI)
+    cfg = _read_panel_cfg()
 
     pico = find_pico()
     if not pico:
@@ -637,3 +638,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
