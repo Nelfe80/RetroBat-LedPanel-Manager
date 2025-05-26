@@ -30,6 +30,49 @@ ES_INPUT_FILE = os.path.join(_root, 'emulationstation', '.emulationstation', 'es
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+import threading
+import tkinter as tk
+import ctypes
+
+def show_popup_tk(text, duration=600, font_size=32, alpha=0.85):
+    """
+    Affiche un petit OSD Tkinter centré, toujours topmost, frameless,
+    ferme après `duration` ms, puis remet le focus sur ES.
+    """
+    def _run():
+        # 1) Créer la fenêtre
+        root = tk.Tk()
+        root.overrideredirect(True)           # pas de bordure
+        root.attributes("-topmost", True)     # topmost
+        root.attributes("-alpha", alpha)      # transparence
+
+        # 2) Le label
+        lbl = tk.Label(root, text=text,
+                       font=("Arial", font_size),
+                       bg="black", fg="white",
+                       padx=20, pady=10)
+        lbl.pack()
+
+        # 3) Centrer
+        root.update_idletasks()
+        w, h = root.winfo_width(), root.winfo_height()
+        ws, hs = root.winfo_screenwidth(), root.winfo_screenheight()
+        x, y = (ws-w)//2, (hs-h)//2
+        root.geometry(f"{w}x{h}+{x}+{y}")
+
+        # 4) Fermeture + refocus
+        def close_and_refocus():
+            root.destroy()
+            # remet le focus sur ES
+            es = ctypes.windll.user32.FindWindowW(None, "EmulationStation")
+            if es:
+                ctypes.windll.user32.SetForegroundWindow(es)
+
+        root.after(duration, close_and_refocus)
+        root.mainloop()
+
+    threading.Thread(target=_run, daemon=True).start()
+
 def _read_panel_cfg() -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     try:
@@ -137,6 +180,7 @@ class LedEventHandler(FileSystemEventHandler):
         self.lip_events    = []
         self.system_layouts     = []    # Liste des layouts dispo pour le système courant
         self.current_layout_idx = 0     # Index du layout actif
+        self.in_game            = False
 
     def _get_saved_layout_idx(self, system: str) -> int:
         cfg = _read_panel_cfg()
@@ -228,28 +272,14 @@ class LedEventHandler(FileSystemEventHandler):
         logger.info(f"➡ Switched to layout [{self.current_layout_idx}] '{entry['name']}'")
 
     def on_modified(self, event):
-        # --- DEBUG ENTRY ---
-        logger.info(f"on_modified triggered by: {event.src_path}")
-        # Only handle our ES event file
-        if event.is_directory or os.path.basename(event.src_path) != os.path.basename(ES_EVENT_FILE):
-            logger.debug("Ignored: not the ESEvent.arg file")
-            return
-
-        # Parse the ES event
+        # Parse EmulationStation event
         ev, system, raw2 = parse_es_event(ES_EVENT_FILE)
-        logger.info(f"Parsed ES_EVENT → ev='{ev}', system='{system}', raw2='{raw2}'")
-        logger.debug(f"on_modified event={event}, system={system}")
-        current = (ev, system, raw2)
-        if current == self.last_es_event:
-            logger.debug("Duplicate ES_EVENT, skipping")
-            return
-        self.last_es_event = current
+        logger.debug(f"on_modified: ev='{ev}', system='{system}' (in_game={self.in_game})")
 
-        logger.info(f"Handling ES_EVENT: event={ev}, system={system}, raw2={raw2}")
-        logger.debug(f"Listening={self.listening}, last_system={self.last_system}, lip_events_count={len(self.lip_events)}")
-
-        # 1) system-selected
-        if ev == 'system-selected' and system != self.last_system:
+        # 1) system-selected: switch system, exit game mode
+        if ev == 'system-selected' and (system != self.last_system or self.in_game):
+            logger.info(f"Branch: system-selected for '{system}' (last was '{self.last_system}')")
+            self.in_game = False
             self._load_system_layouts(system)
             self._send_current_layout()
             self._save_layout_idx(system, self.current_layout_idx)
@@ -257,9 +287,10 @@ class LedEventHandler(FileSystemEventHandler):
             self.lip_events = []
             return
 
-        # 2) game-selected
-        if ev == 'game-selected' and system == self.last_system:
-            logger.info("→ Branch: game-selected")
+        # 2) game-selected: enter game mode or change game
+        if ev == 'game-selected': # and system == self.last_system
+            logger.info(f"Branch: game-selected for '{system}'")
+            self.in_game = True
             # resolve game name
             from urllib.parse import unquote
             formatted = os.path.normpath(unquote(raw2))
@@ -271,27 +302,22 @@ class LedEventHandler(FileSystemEventHandler):
                 game = os.path.splitext(os.path.basename(raw2))[0]
             logger.info(f"Resolved game name: '{game}'")
 
-            # attempt game overlay or fallback
+            # attempt game-specific overlay
             cfg = _read_panel_cfg()
             phys_to_label = {}
-            total = cfg.getint('Panel','buttons_count',fallback=0)
-            for i in range(1, total+1):
+            total = cfg.getint('Panel', 'buttons_count', fallback=0)
+            for i in range(1, total + 1):
                 opt = f'panel_button_{i}'
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = f"B{i}"
-            for opt, lab in [('panel_button_select','COIN'),('panel_button_start','START'),('panel_button_joy','JOY')]:
+            for opt, lab in [('panel_button_select', 'COIN'), ('panel_button_start', 'START'), ('panel_button_joy', 'JOY')]:
                 if cfg.has_option('Panel', opt):
                     phys_to_label[cfg.get('Panel', opt).rstrip(';')] = lab
-            btn_cnt = cfg.getint('Panel','Player1_buttons_count',fallback=cfg.getint('Panel','buttons_count',fallback=0))
+            btn_cnt = cfg.getint('Panel', 'Player1_buttons_count', fallback=cfg.getint('Panel', 'buttons_count', fallback=0))
 
             btns = load_game_layout_buttons(system, game, btn_cnt, phys_to_label)
-            logger.info(f"btns after load_game_layout_buttons: {btns}")
-            if not btns:
-                logger.info("Pas de layout jeu-spécifique, fallback sur layout système par défaut")
-                self._send_current_layout()
-
             if btns:
-                panels = '|'.join(str(i) for i in range(1, cfg.getint('Panel','players_count',fallback=1)+1))
+                panels = '|'.join(str(i) for i in range(1, cfg.getint('Panel', 'players_count', fallback=1) + 1))
                 mapping = ';'.join(f"{lbl}:{clr}" for lbl, clr in btns)
                 cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
                 try:
@@ -299,8 +325,13 @@ class LedEventHandler(FileSystemEventHandler):
                     logger.info(f"➡ Sent (game-selected overlay): {cmd.strip()}")
                 except Exception as e:
                     logger.error(f"Error sending game overlay: {e}")
+            else:
+                logger.info("No game-specific layout: reapplying system default")
+                self._send_current_layout()
+
             self.lip_events = []
-            self.last_system = None
+            #self.last_system = None
+            #si on l'enleve on peut plus switcher n64 de panels systems mais si on le laisse ça bug dans game select et les panels se mettent plus à jour dans mame
             return
 
         # 3) game-start → enable listening and load .lip macros
@@ -333,12 +364,14 @@ class LedEventHandler(FileSystemEventHandler):
         # 4) implicit game-end on new selection
         if self.listening and ev == 'game-selected':
             self.listening = False
+            self.in_game = False
             logger.info("■ Implicit game-end — stopped listening")
             return
 
         # 5) explicit game-end or exit
         if ev in ('game-end', 'exit') and self.listening:
             self.listening = False
+            self.in_game = False
             logger.info("■ Game ended — stopped listening")
             return
 
@@ -554,9 +587,13 @@ def joystick_listener(handler):
             elif ev.type == JOYHATMOTION:
                 iid = ev.instance_id
                 x, y = ev.value
-                logger.info(f"  • Panel {handler.panel_id} Hat moved → {ev.value}")
+                logger.info(f"UU  • Panel {handler.panel_id} Hat moved → {ev.value}")
                 # Hotkey + left/right hors game-start
                 if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                    if not handler.system_layouts:
+                        logging.warning("Aucun layout défini : switch ignoré")
+                        return  # ou return, ou break selon la structure de ta boucle
+
                     if x == -1:
                         handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
                         logger.info("    ↶ Hotkey+Hat-Left → previous layout")
@@ -578,9 +615,15 @@ def joystick_listener(handler):
                 # On ne gère que l'axe 0 (gauche/droite)
                 if axis == 0 and abs(val) > AXIS_THRESHOLD:
                     direction = 'Left' if val < 0 else 'Right'
-                    logger.info(f"  • Panel {handler.panel_id} Axis0 moved → {direction} ({val:.2f})")
+                    logger.info(f"OO  • Panel {handler.panel_id} Axis0 moved → {direction} ({val:.2f})")
                     # Hotkey + left/right hors game-start
+                    logger.info(f"Joystick listening={handler.listening}, hotkey_pressed={states[iid].get(HOTKEY_ID, False)}")
+
                     if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                        if not handler.system_layouts:
+                            logging.warning("Aucun layout défini : switch ignoré")
+                            return  # ou return, ou break selon la structure de ta boucle
+
                         if direction == 'Left':
                             handler.current_layout_idx = (handler.current_layout_idx - 1) % len(handler.system_layouts)
                             handler._save_layout_idx(handler.last_system or '', handler.current_layout_idx)
@@ -591,7 +634,11 @@ def joystick_listener(handler):
                             logger.info("    ↷ Hotkey+Axis-Right → next layout")
                         handler._send_current_layout()
 
-        time.sleep(0.01)
+                        logger.info(f"SHOW POPUP")
+                        name = handler.system_layouts[handler.current_layout_idx]['name']
+                        show_popup_tk(name, duration=600, font_size=32, alpha=0.85)
+
+                        time.sleep(0.01)
 
 def main():
     cfg = _read_panel_cfg()
