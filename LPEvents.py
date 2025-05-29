@@ -12,6 +12,16 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import pygame
 
+import threading
+import tkinter as tk
+import tkinter.font as tkfont
+import ctypes
+from PIL import Image, ImageDraw, ImageFont
+
+# Logging
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
 # Configuration
 BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
 ES_EVENT_FILE    = os.path.join(BASE_DIR, 'ESEvent.arg')
@@ -20,21 +30,33 @@ SYSTEMS_DIR      = os.path.join(BASE_DIR, 'systems')
 BAUDRATE         = 115200
 OFF_COLOR        = 'OFF'
 DEFAULT_COLOR    = 'WHITE'
+TEXT_COLOR       = '#FFFFFF'
+BG_COLOR         = '#2961b0'
 
-# Dynamically locate es_input.cfg
-_current = os.getcwd()
-_root    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_current))))
-ES_INPUT_FILE = os.path.join(_root, 'emulationstation', '.emulationstation', 'es_input.cfg')
+retrobat_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-# Logging
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
-logger = logging.getLogger(__name__)
+# 3) Recalcule le chemin vers Cabin-Regular.ttf dans le thème Carbon
+ES_FONT_PATH = os.path.join(
+    retrobat_root,
+    'emulationstation', '.emulationstation',
+    'themes', 'es-theme-carbon-master',
+    'art', 'fonts', 'Cabin-Regular.ttf'
+)
+FR_PRIVATE = 0x10
 
-import threading
-import tkinter as tk
-import ctypes
+# 4) Vérifie qu’il existe
+if not os.path.exists(ES_FONT_PATH):
+    raise FileNotFoundError(f"Police non trouvée : {ES_FONT_PATH}")
+# charge la police en privé
+ctypes.windll.gdi32.AddFontResourceExW(ES_FONT_PATH, FR_PRIVATE, 0)
 
-def show_popup_tk(text, duration=600, font_size=32, alpha=0.85):
+script_dir = os.path.dirname(os.path.realpath(__file__))
+# Ton plugin est dans …/plugins/LedPanelManager/
+ICON_PATH = os.path.join(script_dir, 'images', 'arcadepanel.png')
+if not os.path.exists(ICON_PATH):
+    raise FileNotFoundError(f"Icône introuvable : {ICON_PATH}")
+
+def show_popup_tk(text, duration=600, font_size=24, alpha=0.9):
     """
     Affiche un petit OSD Tkinter centré, toujours topmost, frameless,
     ferme après `duration` ms, puis remet le focus sur ES.
@@ -45,13 +67,31 @@ def show_popup_tk(text, duration=600, font_size=32, alpha=0.85):
         root.overrideredirect(True)           # pas de bordure
         root.attributes("-topmost", True)     # topmost
         root.attributes("-alpha", alpha)      # transparence
+        root.configure(bg=BG_COLOR)
 
         # 2) Le label
-        lbl = tk.Label(root, text=text,
-                       font=("Arial", font_size),
-                       bg="black", fg="white",
-                       padx=20, pady=10)
-        lbl.pack()
+        #202020 969696 334b7a 2961b0
+        icon = tk.PhotoImage(file=ICON_PATH, master=root)
+        icon = icon.subsample(2, 2)
+        #lbl = tk.Label(root, text=text, image=icon, font=("Cabin", font_size), bg="#2961b0", fg="white", padx=20, pady=20)
+        #lbl.image = icon  # garde une référence pour l’empêcher d’être garbage-collected
+        #lbl.pack()
+
+        # Frame conteneur
+        container = tk.Frame(root, bg=BG_COLOR)
+        container.pack(padx=20, pady=10)
+
+        # Label icône
+        icon_lbl = tk.Label(container, image=icon, bg=BG_COLOR)
+        icon_lbl.image = icon
+        icon_lbl.pack(side="left")
+
+        # Label texte
+        text_lbl = tk.Label(
+            container, text="PANEL : "+text,
+            font=("Cabin", font_size), fg=TEXT_COLOR, bg=BG_COLOR
+        )
+        text_lbl.pack(side="left", padx=(10,0))
 
         # 3) Centrer
         root.update_idletasks()
@@ -68,6 +108,8 @@ def show_popup_tk(text, duration=600, font_size=32, alpha=0.85):
             if es:
                 ctypes.windll.user32.SetForegroundWindow(es)
 
+        root.after(duration, close_and_refocus)
+        root.after(duration, close_and_refocus)
         root.after(duration, close_and_refocus)
         root.mainloop()
 
@@ -109,11 +151,12 @@ def load_layout_buttons(system, btn_count, phys_to_label):
 
 def parse_es_event(path):
     with open(path, encoding='cp1252') as f:
-        data = f.read().strip()
+        raw = f.read().replace('\r','').replace('\n','')
+    data = raw.strip()
     params = dict(p.split('=', 1) for p in data.split('&') if '=' in p)
     ev     = params.get('event','').strip('"').lower()
-    system = params.get('param1','').strip('"').lower()
-    raw2   = params.get('param2','').strip('"')
+    system = params.get('param1','').strip('"').strip().lower()
+    raw2   = params.get('param2','').strip('"').strip()
     # on renvoie raw2 pour qu’on puisse déterminer fichier vs dossier
     return ev, system, raw2
 
@@ -170,6 +213,7 @@ def find_pico():
     logger.error("❌ No Pico detected.")
     return None
 
+
 class LedEventHandler(FileSystemEventHandler):
     def __init__(self, ser, panel_id):
         self.ser           = ser
@@ -220,6 +264,9 @@ class LedEventHandler(FileSystemEventHandler):
     def _load_system_layouts(self, system):
         system_name = os.path.basename(system) if os.path.sep in system else system
         xml_path = os.path.join(SYSTEMS_DIR, f"{system_name}.xml")
+        if not os.path.exists(xml_path):
+            logging.error(f"Fichier de layouts introuvable : {xml_path}")
+            return []
         self.system_layouts = []
         try:
             tree = ET.parse(xml_path)
@@ -290,7 +337,7 @@ class LedEventHandler(FileSystemEventHandler):
         # 2) game-selected: enter game mode or change game
         if ev == 'game-selected': # and system == self.last_system
             logger.info(f"Branch: game-selected for '{system}'")
-            self.in_game = True
+            self.in_game = False
             # resolve game name
             from urllib.parse import unquote
             formatted = os.path.normpath(unquote(raw2))
@@ -337,6 +384,7 @@ class LedEventHandler(FileSystemEventHandler):
         # 3) game-start → enable listening and load .lip macros
         if ev == 'game-start':
             logger.info("→ Branch: game-start")
+            self.in_game = True
             # always reset previous lip events on new start
             self.lip_events = []
             logger.debug("Cleared lip_events before loading new .lip")
@@ -589,7 +637,7 @@ def joystick_listener(handler):
                 x, y = ev.value
                 logger.info(f"UU  • Panel {handler.panel_id} Hat moved → {ev.value}")
                 # Hotkey + left/right hors game-start
-                if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                if not handler.in_game and states[iid].get(HOTKEY_ID, False):
                     if not handler.system_layouts:
                         logging.warning("Aucun layout défini : switch ignoré")
                         return  # ou return, ou break selon la structure de ta boucle
@@ -619,7 +667,7 @@ def joystick_listener(handler):
                     # Hotkey + left/right hors game-start
                     logger.info(f"Joystick listening={handler.listening}, hotkey_pressed={states[iid].get(HOTKEY_ID, False)}")
 
-                    if not handler.listening and states[iid].get(HOTKEY_ID, False):
+                    if not handler.in_game and states[iid].get(HOTKEY_ID, False):
                         if not handler.system_layouts:
                             logging.warning("Aucun layout défini : switch ignoré")
                             return  # ou return, ou break selon la structure de ta boucle
@@ -636,7 +684,7 @@ def joystick_listener(handler):
 
                         logger.info(f"SHOW POPUP")
                         name = handler.system_layouts[handler.current_layout_idx]['name']
-                        show_popup_tk(name, duration=600, font_size=32, alpha=0.85)
+                        show_popup_tk(name)
 
                         time.sleep(0.01)
 
