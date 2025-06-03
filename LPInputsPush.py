@@ -13,14 +13,12 @@ ES_INPUT_CFG     = os.path.join(RETROBAT_ROOT, 'emulationstation', '.emulationst
 ES_EVENT_FILE    = os.path.join(RETROBAT_ROOT, 'plugins', 'LedPanelManager', 'ESEvent.arg')
 PANEL_CONFIG_INI = os.path.join(RETROBAT_ROOT, 'plugins', 'LedPanelManager', 'config.ini')
 MAME_CFG_DIR     = os.path.join(RETROBAT_ROOT, 'bios', 'mame', 'cfg')
-ARCADE_XML_DIR   = os.path.join(RETROBAT_ROOT, 'plugins', 'LedPanelManager', 'systems','mame')
+ARCADE_XML_DIR   = os.path.join(RETROBAT_ROOT, 'plugins', 'LedPanelManager', 'systems', 'mame')
 
 # ——— Logging ———
 logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-# ——— Helpers ———
 
 def parse_es_event(path):
     data = open(path, encoding='utf-8').read().strip()
@@ -30,7 +28,6 @@ def parse_es_event(path):
     rompath  = params.get('param2', '').strip('"')
     game     = os.path.splitext(os.path.basename(rompath))[0]
     return emulator, game
-
 
 def load_es_input(path):
     tree = ET.parse(path)
@@ -60,25 +57,14 @@ def load_es_input(path):
                 break
     return es_maps
 
-
 def load_mame_ports(path):
     tree = ET.parse(path)
     return tree.findall('.//port')
 
-
-def detect_max_player(ports):
-    nums = []
-    for p in ports:
-        t = p.get('type', '')
-        parts = t.split('_', 1)
-        if parts[0].startswith('P') and parts[0][1:].isdigit():
-            nums.append(int(parts[0][1:]))
-        elif parts[0].isdigit():
-            nums.append(int(parts[0]))
-    return max(nums) if nums else 1
-
-
 def load_layout(game, btn_count):
+    """
+    Renvoie l'élément <layout> dont panelButtons == btn_count pour le jeu donné.
+    """
     xml = os.path.join(ARCADE_XML_DIR, f"{game}.xml")
     tree = ET.parse(xml)
     for layout in tree.findall('.//layout'):
@@ -86,14 +72,12 @@ def load_layout(game, btn_count):
             return layout
     raise ValueError(f"No layout for {btn_count} buttons in {game}")
 
-
 def backup_cfg(game):
     src = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
     dst = os.path.join(MAME_CFG_DIR, f"{game}_backup.cfg")
     if os.path.exists(src):
         shutil.copy2(src, dst)
         logger.info(f"Backup {src} → {dst}")
-
 
 def indent(elem, level=0):
     i = "\n" + "    " * level
@@ -107,7 +91,6 @@ def indent(elem, level=0):
     else:
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
-
 
 def add_direction(parent, port, es_map, player_num, players_count):
     orig_type = port.get('type', '').upper()
@@ -123,7 +106,6 @@ def add_direction(parent, port, es_map, player_num, players_count):
         return
     direction = parts[1]
 
-    # priorité au hat si dispo
     kind = None
     if direction in es_map and es_map[direction][1] == 'hat':
         kind = 'hat'
@@ -147,69 +129,47 @@ def add_direction(parent, port, es_map, player_num, players_count):
         else:
             seq.text = f"JOYCODE_{axis_name}_{direction}_SWITCH"
 
-
-def add_button(parent, port, btn, es_map, player_num):
+def add_button(parent, port, btn, es_map, player_num, remap):
     """
-    Injecte un bouton en se basant sur l'attribut 'physical' du layout,
-    mais remappe certains numéros physiques vers d'autres indices de boutons.
+    Injecte un bouton en se basant sur 'physical' du layout,
+    et utilise le dictionnaire `remap` (physical → index_MAME) pour le newseq.
     """
-    # 1) Lecture du numéro physique original
     phys = int(btn.get('physical'))
     ctrl = btn.get('controller').upper()
 
-    # 2) Table de correspondance phys → bouton "virtuel"
-    #    ex : si phys=5, on envoie joycode BUTTON3 ; si phys=6, on envoie BUTTON4, etc.
-    remap = {
-        1: 3,
-        2: 4,
-        3: 5,
-        4: 1,
-        5: 2,
-        6: 6,
-        7: 7,
-        8: 8
-    }
-    # Si phys est dans la table, on remplace ; sinon on garde phys tel quel
-    mapped = remap.get(phys, phys)
-
-    # 3) Création de l'élément <port> (on utilise toujours le phys d'origine pour le type
-    #    afin de rester cohérent avec *_inputs.cfg)
     tag  = port.get('tag')
     mask = port.get('mask')
     pfx  = f"P{player_num}"
+
+    # Le 'type' du <port> reprend phys pour correspondre au *_inputs.cfg
     port_el = ET.SubElement(
         parent, 'port',
         tag=tag,
-        type=f"{pfx}_BUTTON{phys}",  # on ne modifie pas le suffixe "BUTTON{phys}"
+        type=f"{pfx}_BUTTON{phys}",
         mask=mask,
         defvalue=mask
     )
 
-    # 4) Création du <newseq> en fonction du mapping remappé
+    mapped = remap.get(phys, phys)
+    #<port tag=":IN0" type="P1_BUTTON1" mask="16" defvalue="16">
+    #<newseq type="standard">JOYCODE_1_BUTTON3</newseq>
+    # </port>
     seq = ET.SubElement(port_el, 'newseq', type='standard')
     idx, kind = es_map.get(ctrl, (None, None))
-
     if kind == 'button':
-        # On utilise mapped (bouton virtuel) pour JOYCODE
         seq.text = f"JOYCODE_{player_num}_BUTTON{mapped}"
     elif kind == 'key':
         seq.text = f"KEYCODE_{ctrl}"
     else:
         seq.text = ''
 
-
-def write_cfg(game, es_maps, ports, layout):
-    button_map = {
-        'A':   'BUTTON_1',
-        'B':   'BUTTON_2',
-        'X':   'BUTTON_3',
-        'Y':   'BUTTON_4',
-        'L1':  'BUTTON_5',
-        'R1':  'BUTTON_6',
-        'L2':  'BUTTON_7',
-        'R2':  'BUTTON_8',
-    }
-
+def write_cfg(game, es_maps, ports):
+    """
+    Reconstruit la section <input> dans <game>.cfg à partir du mapping ES
+    et du layout XML, en calculant automatiquement le remap par (y,x),
+    sauf si on détecte un jeu 'punch/kick' via le champ 'function', auquel cas
+    on applique le remap fixe.
+    """
     cfg_path = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
     tree = ET.parse(cfg_path)
     root = tree.getroot()
@@ -233,9 +193,63 @@ def write_cfg(game, es_maps, ports, layout):
         len(es_maps)
     )
 
-    # Directions inchangées
     for player_num in range(1, players_count + 1):
         es_map = es_maps[player_num - 1]
+
+        # 1) Charger le layout approprié
+        btn_count = cfg_ini.getint(
+            'Panel',
+            f'Player{player_num}_buttons_count',
+            fallback=cfg_ini.getint('Panel', 'buttons_count', fallback=6)
+        )
+        try:
+            layout = load_layout(game, btn_count)
+        except (FileNotFoundError, ValueError):
+            logger.warning(f"No XML layout for game '{game}' with {btn_count} buttons")
+            continue
+
+        # 2) Détecter s'il s'agit d'un jeu "kick/punch" en inspectant le champ 'function'
+        is_kick_punch = False
+        for btn in layout.findall('button'):
+            func = btn.get('function', '')
+            if func and ('punch' in func.lower() or 'kick' in func.lower()):
+                is_kick_punch = True
+                break
+
+        # 3) Définir le remap
+        if is_kick_punch:
+            # Remap fixe pour jeux kick-punch
+            remap = {
+                1: 3,
+                2: 4,
+                3: 5,
+                4: 1,
+                5: 2,
+                6: 6,
+                7: 7,
+                8: 8
+            }
+        else:
+            # Remap automatique par (y,x)
+            boutons = []
+            for btn in layout.findall('button'):
+                gb = btn.get('gameButton', '').upper()
+                if gb in ('A','B','X','Y','L1','R1','L2','R2'):
+                    phys = int(btn.get('physical'))
+                    x = int(btn.get('x'))
+                    y = int(btn.get('y'))
+                    boutons.append((phys, x, y))
+            if boutons:
+                ys = sorted({y for (_, _, y) in boutons})
+                ordre = []
+                for row_y in ys:
+                    ligne = [b for b in boutons if b[2] == row_y]
+                    ordre.extend(sorted(ligne, key=lambda item: item[1]))
+                remap = {phys: idx + 1 for idx, (phys, _, _) in enumerate(ordre)}
+            else:
+                remap = {}
+
+        # 4) Injecter d'abord les directions
         for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
             key = f"P{player_num}_{dir}"
             if key in ports_by_type:
@@ -249,22 +263,14 @@ def write_cfg(game, es_maps, ports, layout):
             else:
                 logger.debug(f"No port for direction {key}")
 
-    # Buttons par joueur
-    for player_num in range(1, players_count + 1):
-        es_map = es_maps[player_num - 1]
-        btn_count = cfg_ini.getint(
-            'Panel',
-            f'Player{player_num}_buttons_count',
-            fallback=cfg_ini.getint('Panel', 'buttons_count', fallback=6)
-        )
-        layout = load_layout(game, btn_count)
-
+        # 5) Injecter ensuite les boutons, en passant `remap`
         for btn in layout.findall('button'):
-            gb = btn.get('gameButton').upper()
+            gb = btn.get('gameButton', '').upper()
+            phys = int(btn.get('physical'))
 
-            # On remplace le test initial par :
-            if gb in button_map:
-                port_key = f"P{player_num}_{button_map[gb]}"
+            # Essayer d'abord "P{n}_BUTTON_{phys}", sinon "P{n}_BUTTON{phys}"
+            if gb in ('A','B','X','Y','L1','R1','L2','R2'):
+                port_key = f"P{player_num}_BUTTON_{phys}"
             elif gb == 'START':
                 port_key = next(
                     (k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START")
@@ -281,12 +287,11 @@ def write_cfg(game, es_maps, ports, layout):
                 continue
 
             port = ports_by_type[port_key]
-            add_button(inp, port, btn, es_map, player_num)
+            add_button(inp, port, btn, es_map, player_num, remap)
 
     indent(root)
     tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
     logger.info(f"Wrote {cfg_path}")
-
 
 class GameHandler(FileSystemEventHandler):
     def __init__(self):
@@ -299,21 +304,15 @@ class GameHandler(FileSystemEventHandler):
         if emulator != 'mame' or game == self.last_game:
             return
 
-        cfg_ini = configparser.ConfigParser()
-        cfg_ini.read(PANEL_CONFIG_INI)
-        btn_count = cfg_ini.getint('Panel', 'buttons_count', fallback=6)
-
         logger.info(f"Selected MAME game: {game}")
         try:
             ports = load_mame_ports(os.path.join(MAME_CFG_DIR, f"{game}_inputs.cfg"))
             es_maps = load_es_input(ES_INPUT_CFG)
-            # layout loaded inside write_cfg per joueur
             backup_cfg(game)
-            write_cfg(game, es_maps, ports, layout=None)
+            write_cfg(game, es_maps, ports)
             self.last_game = game
         except Exception:
             logger.exception("Erreur lors de l'injection de layout")
-
 
 def main():
     if not os.path.exists(ES_EVENT_FILE):
@@ -328,7 +327,6 @@ def main():
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
-
 
 if __name__ == '__main__':
     main()
