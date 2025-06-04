@@ -142,15 +142,15 @@ TYPE_MAP = {
 
 def add_button(parent, port, btn, es_map, player_num, type_index, phys):
     """
-    Injecte un bouton en se basant sur 'physical' du layout,
-    utilise `type_index` pour le type MAME (BUTTON_{type_index}),
-    et envoie JOYCODE_{player}_BUTTON{phys} dans <newseq>.
+    Injecte un <port> basé sur 'physical' du layout,
+    avec type="P{player_num}_BUTTON{type_index}",
+    et newseq="JOYCODE_{player_num}_BUTTON{phys}".
     """
     tag  = port.get('tag')
     mask = port.get('mask')
     pfx  = f"P{player_num}"
 
-    # 1) Créer <port type="P{player}_BUTTON_{type_index}" …>
+    # Créer <port type="P{player}_BUTTON{type_index}"> (pas d’underscore avant le numéro)
     port_el = ET.SubElement(
         parent, 'port',
         tag=tag,
@@ -159,7 +159,7 @@ def add_button(parent, port, btn, es_map, player_num, type_index, phys):
         defvalue=mask
     )
 
-    # 2) Dans <newseq>, on met JOYCODE_{player}_BUTTON{phys}
+    # À l’intérieur, injecter <newseq>JOYCODE_{player}_BUTTON{phys}</newseq>
     seq = ET.SubElement(port_el, 'newseq', type='standard')
     ctrl = btn.get('controller', '').upper()
     idx, kind = es_map.get(ctrl, (None, None))
@@ -173,17 +173,22 @@ def add_button(parent, port, btn, es_map, player_num, type_index, phys):
 
 def write_cfg(game, es_maps, ports):
     """
-    Reconstruit la section <input> dans <game>.cfg en se basant sur TYPE_MAP,
-    sauf pour les jeux “punch/kick” listés dans config.ini, où l’on utilise
-    le remap fixe défini dans punchkickgames_remap.
+    Reconstruit <input> dans <game>.cfg en utilisant :
+      - punch/kick      → punchkickgames_remap
+      - 3 boutons       → TYPE_MAP puis ajuster <newseq> via tributtons_remap
+      - sinon           → TYPE_MAP
     """
     cfg_path = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
     tree = ET.parse(cfg_path)
     root = tree.getroot()
     system = root.find('.//system')
-    old = system.find('input')
-    if old is not None:
-        system.remove(old)
+
+    # Supprime l’ancienne <input> si présente
+    old_input = system.find('input')
+    if old_input is not None:
+        system.remove(old_input)
+
+    # Crée une nouvelle balise <input>
     inp = ET.Element('input')
     bgfx = system.find('bgfx') or system.find('bgfg')
     if bgfx is not None:
@@ -191,22 +196,35 @@ def write_cfg(game, es_maps, ports):
     else:
         system.append(inp)
 
+    # Indexe les ports existants par leur type (avec underscore)
     ports_by_type = {p.get('type'): p for p in ports}
 
     cfg_ini = configparser.ConfigParser()
     cfg_ini.read(PANEL_CONFIG_INI)
 
-    # Charger la liste des jeux punch/kick et leur remap fixe
     pk_games = []
-    pk_remap_dict = {}
+    pk_remap  = {}
+    tb_games  = []
+    tb_remap  = {}
+
     if cfg_ini.has_section('Mapping'):
+        # punch/kick
         pk_list = cfg_ini.get('Mapping', 'punchkickgames', fallback='').split(',')
-        pk_games = [name.strip().lower() for name in pk_list if name.strip()]
-        remap_str = cfg_ini.get('Mapping', 'punchkickgames_remap', fallback='').strip()
-        if remap_str:
-            for pair in remap_str.split(','):
+        pk_games = [n.strip().lower() for n in pk_list if n.strip()]
+        pk_str = cfg_ini.get('Mapping', 'punchkickgames_remap', fallback='').strip()
+        if pk_str:
+            for pair in pk_str.split(','):
                 a, b = pair.split(':')
-                pk_remap_dict[int(a)] = int(b)
+                pk_remap[int(a)] = int(b)
+
+        # tri-button
+        tb_list = cfg_ini.get('Mapping', 'tributtons', fallback='').split(',')
+        tb_games = [n.strip().lower() for n in tb_list if n.strip()]
+        tb_str = cfg_ini.get('Mapping', 'tributtons_remap', fallback='').strip()
+        if tb_str:
+            for pair in tb_str.split(','):
+                a, b = pair.split(':')
+                tb_remap[int(a)] = int(b)
 
     players_count = min(
         cfg_ini.getint('Panel', 'players_count', fallback=1),
@@ -216,7 +234,7 @@ def write_cfg(game, es_maps, ports):
     for player_num in range(1, players_count + 1):
         es_map = es_maps[player_num - 1]
 
-        # 1) Charger le layout XML selon btn_count
+        # Charger le layout XML selon btn_count
         btn_count = cfg_ini.getint(
             'Panel',
             f'Player{player_num}_buttons_count',
@@ -225,18 +243,22 @@ def write_cfg(game, es_maps, ports):
         try:
             layout = load_layout(game, btn_count)
         except (FileNotFoundError, ValueError):
-            logger.warning(f"No XML layout for game '{game}' with {btn_count} buttons")
+            logger.warning(f"No XML layout pour '{game}' ({btn_count} boutons)")
             continue
 
-        # 2) Déterminer remap_type selon que ce soit un jeu punch/kick ou non
-        is_pk = game.lower() in pk_games
-        if is_pk and pk_remap_dict:
-            logger.warning(f"Remap '{game}'")
-            remap_type = pk_remap_dict
+        # Choisir le remap_type initial
+        name_lower = game.lower()
+        if name_lower in pk_games and pk_remap:
+            remap_type = pk_remap
+            is_tributton = False
+        elif name_lower in tb_games and tb_remap:
+            remap_type = TYPE_MAP   # d’abord on applique TYPE_MAP
+            is_tributton = True
         else:
             remap_type = TYPE_MAP
+            is_tributton = False
 
-        # 3) Injecter d’abord les directions (inchangé)
+        # Injecter d’abord les directions
         for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
             key = f"P{player_num}_{dir}"
             if key in ports_by_type:
@@ -250,14 +272,14 @@ def write_cfg(game, es_maps, ports):
             else:
                 logger.debug(f"No port for direction {key}")
 
-        # 4) Injecter ensuite chaque bouton du layout
+        # Injecter chaque bouton de combat du layout (avec TYPE_MAP ou punch/kick)
         for btn in layout.findall('button'):
             gb   = btn.get('gameButton', '').upper()
             phys = int(btn.get('physical'))
 
             if gb in ('A','B','X','Y','L1','R1','L2','R2'):
-                type_idx = remap_type.get(phys, phys)
-                port_key = f"P{player_num}_BUTTON_{type_idx}"
+                type_index = remap_type.get(phys, phys)
+                port_key = f"P{player_num}_BUTTON_{type_index}"
             elif gb == 'START':
                 port_key = next(
                     (k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START")
@@ -270,145 +292,38 @@ def write_cfg(game, es_maps, ports):
                 port_key = None
 
             if not port_key or port_key not in ports_by_type:
-                logger.error(f"Missing port for key {port_key}")
+                logger.error(f"Missing port pour key {port_key}")
                 continue
 
             port = ports_by_type[port_key]
-            add_button(inp, port, btn, es_map, player_num, type_idx, phys)
+            add_button(inp, port, btn, es_map, player_num, type_index, phys)
 
+        # Ajustement final pour tri-button : modifier <newseq> pour les phys dans tb_remap
+        if is_tributton:
+            for port_el in inp.findall('port'):
+                seq = port_el.find('newseq')
+                if seq is None or not seq.text:
+                    continue
+                # seq.text format attendu : "JOYCODE_{player}_BUTTON{old_phys}"
+                parts = seq.text.split('BUTTON')
+                if len(parts) != 2:
+                    continue
+                try:
+                    old_phys = int(parts[1])
+                except ValueError:
+                    continue
+                if old_phys in tb_remap:
+                    new_phys = tb_remap[old_phys]
+                    seq.text = f"JOYCODE_{player_num}_BUTTON{new_phys}"
+
+    # Réindenter et écrire le résultat
     indent(root)
     tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
     logger.info(f"Wrote {cfg_path}")
 
-def write_cfg_old(game, es_maps, ports):
-    """
-    Reconstruit la section <input> dans <game>.cfg à partir du mapping ES
-    et du layout XML, en calculant automatiquement le remap par (y,x),
-    sauf si on détecte un jeu 'punch/kick' via le champ 'function', auquel cas
-    on applique le remap fixe.
-    """
-    cfg_path = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
-    tree = ET.parse(cfg_path)
-    root = tree.getroot()
-    system = root.find('.//system')
-    old = system.find('input')
-    if old is not None:
-        system.remove(old)
-    inp = ET.Element('input')
-    bgfx = system.find('bgfx') or system.find('bgfg')
-    if bgfx is not None:
-        system.insert(list(system).index(bgfx), inp)
-    else:
-        system.append(inp)
 
-    ports_by_type = {p.get('type'): p for p in ports}
 
-    cfg_ini = configparser.ConfigParser()
-    cfg_ini.read(PANEL_CONFIG_INI)
-    players_count = min(
-        cfg_ini.getint('Panel', 'players_count', fallback=1),
-        len(es_maps)
-    )
 
-    for player_num in range(1, players_count + 1):
-        es_map = es_maps[player_num - 1]
-
-        # 1) Charger le layout approprié
-        btn_count = cfg_ini.getint(
-            'Panel',
-            f'Player{player_num}_buttons_count',
-            fallback=cfg_ini.getint('Panel', 'buttons_count', fallback=6)
-        )
-        try:
-            layout = load_layout(game, btn_count)
-        except (FileNotFoundError, ValueError):
-            logger.warning(f"No XML layout for game '{game}' with {btn_count} buttons")
-            continue
-
-        # 2) Détecter s'il s'agit d'un jeu "kick/punch" en inspectant le champ 'function'
-        is_kick_punch = False
-        for btn in layout.findall('button'):
-            func = btn.get('function', '')
-            if func and ('punch' in func.lower() or 'kick' in func.lower()):
-                is_kick_punch = True
-                break
-
-        # 3) Définir le remap
-        if is_kick_punch:
-            # Remap fixe pour jeux kick-punch
-            remap = {
-                1: 3,
-                2: 4,
-                3: 5,
-                4: 1,
-                5: 2,
-                6: 6,
-                7: 7,
-                8: 8
-            }
-        else:
-            # Remap automatique par (y,x)
-            boutons = []
-            for btn in layout.findall('button'):
-                gb = btn.get('gameButton', '').upper()
-                if gb in ('A','B','X','Y','L1','R1','L2','R2'):
-                    phys = int(btn.get('physical'))
-                    x = int(btn.get('x'))
-                    y = int(btn.get('y'))
-                    boutons.append((phys, x, y))
-            if boutons:
-                ys = sorted({y for (_, _, y) in boutons})
-                ordre = []
-                for row_y in ys:
-                    ligne = [b for b in boutons if b[2] == row_y]
-                    ordre.extend(sorted(ligne, key=lambda item: item[1]))
-                remap = {phys: idx + 1 for idx, (phys, _, _) in enumerate(ordre)}
-            else:
-                remap = {}
-
-        # 4) Injecter d'abord les directions
-        for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
-            key = f"P{player_num}_{dir}"
-            if key in ports_by_type:
-                add_direction(
-                    inp,
-                    ports_by_type[key],
-                    es_map,
-                    player_num,
-                    players_count
-                )
-            else:
-                logger.debug(f"No port for direction {key}")
-
-        # 5) Injecter ensuite les boutons, en passant `remap`
-        for btn in layout.findall('button'):
-            gb = btn.get('gameButton', '').upper()
-            phys = int(btn.get('physical'))
-
-            # Essayer d'abord "P{n}_BUTTON_{phys}", sinon "P{n}_BUTTON{phys}"
-            if gb in ('A','B','X','Y','L1','R1','L2','R2'):
-                port_key = f"P{player_num}_BUTTON_{phys}"
-            elif gb == 'START':
-                port_key = next(
-                    (k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START")
-                     if k in ports_by_type),
-                    None
-                )
-            elif gb == 'COIN':
-                port_key = f"COIN_{player_num}"
-            else:
-                port_key = None
-
-            if not port_key or port_key not in ports_by_type:
-                logger.error(f"Missing port for key {port_key}")
-                continue
-
-            port = ports_by_type[port_key]
-            add_button(inp, port, btn, es_map, player_num, remap)
-
-    indent(root)
-    tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
-    logger.info(f"Wrote {cfg_path}")
 
 class GameHandler(FileSystemEventHandler):
     def __init__(self):
