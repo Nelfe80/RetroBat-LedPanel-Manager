@@ -129,41 +129,158 @@ def add_direction(parent, port, es_map, player_num, players_count):
         else:
             seq.text = f"JOYCODE_{axis_name}_{direction}_SWITCH"
 
-def add_button(parent, port, btn, es_map, player_num, remap):
+TYPE_MAP = {
+    4: 4,
+    3: 3,
+    5: 5,
+    7: 7,
+    1: 1,
+    2: 2,
+    6: 6,
+    8: 8,
+}
+
+def add_button(parent, port, btn, es_map, player_num, type_index, phys):
     """
     Injecte un bouton en se basant sur 'physical' du layout,
-    et utilise le dictionnaire `remap` (physical → index_MAME) pour le newseq.
+    utilise `type_index` pour le type MAME (BUTTON_{type_index}),
+    et envoie JOYCODE_{player}_BUTTON{phys} dans <newseq>.
     """
-    phys = int(btn.get('physical'))
-    ctrl = btn.get('controller').upper()
-
     tag  = port.get('tag')
     mask = port.get('mask')
     pfx  = f"P{player_num}"
 
-    # Le 'type' du <port> reprend phys pour correspondre au *_inputs.cfg
+    # 1) Créer <port type="P{player}_BUTTON_{type_index}" …>
     port_el = ET.SubElement(
         parent, 'port',
         tag=tag,
-        type=f"{pfx}_BUTTON{phys}",
+        type=f"{pfx}_BUTTON{type_index}",
         mask=mask,
         defvalue=mask
     )
 
-    mapped = remap.get(phys, phys)
-    #<port tag=":IN0" type="P1_BUTTON1" mask="16" defvalue="16">
-    #<newseq type="standard">JOYCODE_1_BUTTON3</newseq>
-    # </port>
+    # 2) Dans <newseq>, on met JOYCODE_{player}_BUTTON{phys}
     seq = ET.SubElement(port_el, 'newseq', type='standard')
+    ctrl = btn.get('controller', '').upper()
     idx, kind = es_map.get(ctrl, (None, None))
     if kind == 'button':
-        seq.text = f"JOYCODE_{player_num}_BUTTON{mapped}"
+        seq.text = f"JOYCODE_{player_num}_BUTTON{phys}"
     elif kind == 'key':
         seq.text = f"KEYCODE_{ctrl}"
     else:
         seq.text = ''
 
+
 def write_cfg(game, es_maps, ports):
+    """
+    Reconstruit la section <input> dans <game>.cfg en se basant sur TYPE_MAP,
+    sauf pour les jeux “punch/kick” listés dans config.ini, où l’on utilise
+    le remap fixe défini dans punchkickgames_remap.
+    """
+    cfg_path = os.path.join(MAME_CFG_DIR, f"{game}.cfg")
+    tree = ET.parse(cfg_path)
+    root = tree.getroot()
+    system = root.find('.//system')
+    old = system.find('input')
+    if old is not None:
+        system.remove(old)
+    inp = ET.Element('input')
+    bgfx = system.find('bgfx') or system.find('bgfg')
+    if bgfx is not None:
+        system.insert(list(system).index(bgfx), inp)
+    else:
+        system.append(inp)
+
+    ports_by_type = {p.get('type'): p for p in ports}
+
+    cfg_ini = configparser.ConfigParser()
+    cfg_ini.read(PANEL_CONFIG_INI)
+
+    # Charger la liste des jeux punch/kick et leur remap fixe
+    pk_games = []
+    pk_remap_dict = {}
+    if cfg_ini.has_section('Mapping'):
+        pk_list = cfg_ini.get('Mapping', 'punchkickgames', fallback='').split(',')
+        pk_games = [name.strip().lower() for name in pk_list if name.strip()]
+        remap_str = cfg_ini.get('Mapping', 'punchkickgames_remap', fallback='').strip()
+        if remap_str:
+            for pair in remap_str.split(','):
+                a, b = pair.split(':')
+                pk_remap_dict[int(a)] = int(b)
+
+    players_count = min(
+        cfg_ini.getint('Panel', 'players_count', fallback=1),
+        len(es_maps)
+    )
+
+    for player_num in range(1, players_count + 1):
+        es_map = es_maps[player_num - 1]
+
+        # 1) Charger le layout XML selon btn_count
+        btn_count = cfg_ini.getint(
+            'Panel',
+            f'Player{player_num}_buttons_count',
+            fallback=cfg_ini.getint('Panel', 'buttons_count', fallback=6)
+        )
+        try:
+            layout = load_layout(game, btn_count)
+        except (FileNotFoundError, ValueError):
+            logger.warning(f"No XML layout for game '{game}' with {btn_count} buttons")
+            continue
+
+        # 2) Déterminer remap_type selon que ce soit un jeu punch/kick ou non
+        is_pk = game.lower() in pk_games
+        if is_pk and pk_remap_dict:
+            logger.warning(f"Remap '{game}'")
+            remap_type = pk_remap_dict
+        else:
+            remap_type = TYPE_MAP
+
+        # 3) Injecter d’abord les directions (inchangé)
+        for dir in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+            key = f"P{player_num}_{dir}"
+            if key in ports_by_type:
+                add_direction(
+                    inp,
+                    ports_by_type[key],
+                    es_map,
+                    player_num,
+                    players_count
+                )
+            else:
+                logger.debug(f"No port for direction {key}")
+
+        # 4) Injecter ensuite chaque bouton du layout
+        for btn in layout.findall('button'):
+            gb   = btn.get('gameButton', '').upper()
+            phys = int(btn.get('physical'))
+
+            if gb in ('A','B','X','Y','L1','R1','L2','R2'):
+                type_idx = remap_type.get(phys, phys)
+                port_key = f"P{player_num}_BUTTON_{type_idx}"
+            elif gb == 'START':
+                port_key = next(
+                    (k for k in (f"{player_num}_PLAYER_START", f"{player_num}_PLAYERS_START")
+                     if k in ports_by_type),
+                    None
+                )
+            elif gb == 'COIN':
+                port_key = f"COIN_{player_num}"
+            else:
+                port_key = None
+
+            if not port_key or port_key not in ports_by_type:
+                logger.error(f"Missing port for key {port_key}")
+                continue
+
+            port = ports_by_type[port_key]
+            add_button(inp, port, btn, es_map, player_num, type_idx, phys)
+
+    indent(root)
+    tree.write(cfg_path, encoding='utf-8', xml_declaration=True)
+    logger.info(f"Wrote {cfg_path}")
+
+def write_cfg_old(game, es_maps, ports):
     """
     Reconstruit la section <input> dans <game>.cfg à partir du mapping ES
     et du layout XML, en calculant automatiquement le remap par (y,x),
