@@ -4,8 +4,8 @@
     <layouts>
       <layout panelButtons="2" type="2-Button">
         <joystick color="Red"/>
-        <button id="1" physical="1" controller="A" gameButton="A" x="30" y="60" color="Red" function="Stance"/>
-        <button id="2" physical="2" controller="B" gameButton="B" x="50" y="60" color="Yellow" function="Shot"/>
+        <button id="1" physical="4" controller="Y" gameButton="Y" x="30" y="60" color="White" function="N/A"/>
+        <button id="2" physical="3" controller="X" gameButton="X" x="50" y="60" color="White" function="N/A"/>
         <button id="START" physical="3" controller="START" gameButton="START" x="85" y="90" color="White" function="Start"/>
         <button id="COIN" physical="4" controller="SELECT" gameButton="COIN" x="95" y="90" color="White" function="Coin"/>
       </layout>

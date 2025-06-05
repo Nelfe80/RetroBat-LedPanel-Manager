@@ -212,6 +212,7 @@ def write_cfg(game, es_maps, ports):
         with open(cfg_path, "w", encoding="utf-8") as f:
             f.write(template)
 
+
     tree = ET.parse(cfg_path)
     root = tree.getroot()
     system = root.find('.//system')
