@@ -753,7 +753,7 @@ class LedEventHandler(FileSystemEventHandler):
                     # ——————————————————————————————————————————————————————————
 
                     if src_rmp:
-                        # 2) On a un template : copie et remplacement de <p>
+                        # 2) Template trouvé : copie + remplacement de <p>
                         logger.info(f"  Génération remap depuis '{os.path.basename(src_rmp)}' → '{target_rmp}'")
                         cfg     = _read_panel_cfg()
                         players = cfg.getint('Panel', 'players_count', fallback=1)
@@ -767,9 +767,10 @@ class LedEventHandler(FileSystemEventHandler):
                                     dst.write(line)
 
                     else:
-                        # === Fallback : pas de template .rmp, on génère depuis le XML ===
-                        cfg      = _read_panel_cfg()
-                        # Reconstruire phys_to_label pour les boutons “spéciaux”
+                        # 3) Pas de template → fallback : génération dynamique depuis XML
+                        cfg = _read_panel_cfg()
+
+                        # a) Reconstruire phys_to_label (B1, B2, START, COIN, JOY)
                         phys_to_label = {}
                         total = cfg.getint('Panel', 'buttons_count', fallback=0)
                         for i in range(1, total + 1):
@@ -778,18 +779,17 @@ class LedEventHandler(FileSystemEventHandler):
                                 phys = cfg.get('Panel', opt).rstrip(';')
                                 phys_to_label[phys] = f"B{i}"
                         for opt, lab in [
-                                ('panel_button_select', 'COIN'),
-                                ('panel_button_start',  'START'),
-                                ('panel_button_joy',    'JOY')
-                            ]:
+                            ('panel_button_select','COIN'),
+                            ('panel_button_start','START'),
+                            ('panel_button_joy','JOY')
+                        ]:
                             if cfg.has_option('Panel', opt):
                                 phys = cfg.get('Panel', opt).rstrip(';')
                                 phys_to_label[phys] = lab
 
-                        btn_cnt  = cfg.getint('Panel', 'Player1_buttons_count',
-                                    fallback=cfg.getint('Panel','buttons_count',fallback=0))
                         panel_id = self.panel_id
 
+                        # b) Choix du XML : jeu d’abord, sinon système
                         xml_game     = os.path.join(SYSTEMS_DIR, system, f"{game}.xml")
                         xml_fallback = os.path.join(SYSTEMS_DIR, f"{system}.xml")
                         xml_to_parse = xml_game if os.path.isfile(xml_game) else xml_fallback
@@ -797,51 +797,59 @@ class LedEventHandler(FileSystemEventHandler):
                         try:
                             tree = ET.parse(xml_to_parse)
                             root = tree.getroot()
-                            # Sélection du layout courant
-                            selector    = f".//layout[@panelButtons='{btn_cnt}'][@name='{layout_name}']"
-                            layout_elem = root.find(selector) or root.find(f".//layout[@panelButtons='{btn_cnt}']")
+
+                            # c) Trouver l’élément <layout> choisi
+                            layout_elem = root.find(f".//layout[@name='{layout_name}']")
                             if layout_elem is None:
-                                raise ValueError(f"No layout[@panelButtons={btn_cnt}] in {xml_to_parse}")
+                                layout_elem = root.find(f".//layout[@type='{layout_name}']")
+                            if layout_elem is None:
+                                # fallback : premier layout dont panelButtons <= config
+                                btn_cfg = cfg.getint('Panel','Player1_buttons_count',
+                                          fallback=cfg.getint('Panel','buttons_count',fallback=0))
+                                for le in root.findall(".//layout"):
+                                    try:
+                                        pb = int(le.get('panelButtons','0'))
+                                    except ValueError:
+                                        continue
+                                    if pb <= btn_cfg:
+                                        layout_elem = le
+                                        break
+                            if layout_elem is None:
+                                raise ValueError(f"No <layout> matching '{layout_name}' in {xml_to_parse}")
 
                             remap_lines = []
-                            # 1) device
+                            # 1) Device + dpad mode
                             remap_lines.append(f'input_libretro_device_p{panel_id} = "{panel_id}"\n')
-                            # 2) dpad mode
                             remap_lines.append(f'input_player{panel_id}_analog_dpad_mode = "0"\n')
 
-                            # 3) joystick (optionnel)
-                            #    on peut l’omettre si pas de mapping
-
-                            # 4) chaque bouton
+                            # 2) Tous les boutons du layout
                             for btn in layout_elem.findall('button'):
-                                phys       = btn.get('physical')
-                                retroid    = btn.get('retropad_id') or ''
-                                game_btn   = btn.get('gameButton', 'NONE').upper()
-                                controller = btn.get('controller', '').lower()
+                                rid        = btn.get('retropad_id') or ''
+                                if not rid:
+                                    continue
 
-                                # Si gameButton défini (START/COIN/JOY) on l’utilise
-                                if game_btn in ('START', 'COIN', 'JOY'):
+                                game_btn   = btn.get('gameButton','NONE').upper()
+                                controller = btn.get('controller','').lower()
+                                phys       = btn.get('physical')
+
+                                if game_btn in ('START','COIN','JOY'):
                                     label = game_btn.lower()
-                                # Sinon si controller est défini, on l’utilise, avec remplacements :
                                 elif controller:
-                                    label = controller.lower()
-                                    # remplacements demandés
-                                    if label == 'pageup':
+                                    # L/R sans chiffre
+                                    if controller == 'pageup':
                                         label = 'l'
-                                    elif label == 'pagedown':
+                                    elif controller == 'pagedown':
                                         label = 'r'
-                                    elif label == 'select':
+                                    elif controller == 'select':
                                         label = 'coin'
-                                    # les autres (a, b, x, y, l, r…) restent tels quels
-                                # Sinon, on retombe sur phys_to_label (B1, B2…)
+                                    else:
+                                        label = controller
                                 else:
                                     label = phys_to_label.get(phys, f"B{phys}")
 
-                                # N’écrire que si on a bien un retropad_id
-                                if retroid:
-                                    remap_lines.append(f'input_player{panel_id}_btn_{label} = "{retroid}"\n')
+                                remap_lines.append(f'input_player{panel_id}_btn_{label} = "{rid}"\n')
 
-                            # 5) Écrire le fichier
+                            # 3) Écriture du fichier généré
                             os.makedirs(os.path.dirname(target_rmp), exist_ok=True)
                             with open(target_rmp, 'w', encoding='utf-8') as dst:
                                 dst.writelines(remap_lines)
@@ -851,6 +859,7 @@ class LedEventHandler(FileSystemEventHandler):
                             )
                         except Exception as e:
                             logger.error(f"  Échec génération fallback remap depuis XML: {e}")
+
 
                 if self.game_layouts:
                     # 5) Si on a bien des layouts “jeu”, appliquer et sauvegarder
