@@ -118,37 +118,149 @@ def show_popup_tk(text, duration=600, font_size=24, alpha=0.9):
 
 def get_system_emulator(system_name: str) -> (str, str):
     """
-    Lit <RetroBatRoot>/emulationstation/.emulationstation/es_settings.cfg
-    pour extraire l'émulateur et le core par défaut du système <system_name>.
-    Renvoie un tuple (emulator, core). Si le fichier est introuvable ou qu'aucune entrée
-    n'existe, renvoie ("", "").
+    Lit d’abord es_settings.cfg pour l'émulateur et le core utilisateur.
+    S’ils n'existent pas, va chercher dans es_systems.cfg :
+      1) repère le <system><name>system_name</name>
+      2) si pas de <emulators> défini → prend <theme> comme nom d’un autre système
+         et recommence la recherche sur ce système « originel »
+      3) dans <emulators> de ce système, cherche le <core default="true"> …
+         sinon premier <emulator> et premier <core>.
     """
-    # BASE_DIR est, par exemple, ...\RetroBatV7\plugins\LedPanelManager
-    # On remonte jusqu'à <RetroBatRoot> (= parent de "plugins").
     retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
-    es_home = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
-    cfg_path = os.path.join(es_home, "es_settings.cfg")
+    es_home       = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
+    settings_cfg  = os.path.join(es_home, "es_settings.cfg")
+    systems_cfg   = os.path.join(es_home, "es_systems.cfg")
 
-    emulator, core = "", ""
+    emulator = ""
+    core     = ""
+
+    # 1) Essayer dans es_settings.cfg
     try:
-        tree = ET.parse(cfg_path)
+        tree = ET.parse(settings_cfg)
         root = tree.getroot()
-        # ex. <string name="mame.emulator" value="libretro" />
-        #     <string name="mame.core"     value="mame2014" />
         for s in root.findall('string'):
-            name_attr = s.get('name', '')
-            val_attr  = s.get('value', '')
-            if name_attr == f"{system_name}.emulator":
-                emulator = val_attr
-            elif name_attr == f"{system_name}.core":
-                core = val_attr
-        return emulator, core
+            n = s.get('name',''); v = s.get('value','')
+            if n == f"{system_name}.emulator":
+                emulator = v
+            elif n == f"{system_name}.core":
+                core = v
+    except Exception:
+        # fichier absent ou parse error → on tombera sur es_systems.cfg
+        pass
+
+    # 2) S’il manque l’un des deux, ou pour garantir les defaults, on charge es_systems.cfg
+    if not emulator or not core:
+        try:
+            tree = ET.parse(systems_cfg)
+            root = tree.getroot()
+
+            def find_and_parse(sys_elem):
+                """Retourne (emu,core) pour ce <system> ou ('','') si aucun <emulators>."""
+                ems = sys_elem.find('emulators')
+                if ems is None or not ems.findall('emulator'):
+                    return "", ""
+                # a) core default="true"
+                for em in ems.findall('emulator'):
+                    cores = em.find('cores')
+                    if cores is None:
+                        continue
+                    for co in cores.findall('core'):
+                        if co.get('default','').lower() == 'true':
+                            return em.get('name',''), co.text.strip()
+                # b) fallback : premier emulator + premier core
+                em = ems.find('emulator')
+                emu_name = em.get('name','') if em is not None else ""
+                core_name = ""
+                if em is not None:
+                    cores = em.find('cores')
+                    if cores is not None and cores.find('core') is not None:
+                        core_name = cores.find('core').text.strip()
+                return emu_name, core_name
+
+            # 2.a) Chercher directement le system_name
+            target = None
+            for sys_elem in root.findall('system'):
+                nm = sys_elem.find('name')
+                if nm is not None and nm.text.strip().lower() == system_name.lower():
+                    target = sys_elem
+                    break
+
+            # 2.b) Si on l'a trouvé et qu'il a des emulators, on parse
+            if target is not None:
+                emu2, core2 = find_and_parse(target)
+                # 2.c) Si liste vide (groupe), on regarde la balise <theme>
+                if not emu2 or not core2:
+                    theme = target.find('theme')
+                    if theme is not None and theme.text:
+                        real = theme.text.strip()
+                        # cherche le system originel dont <name> == real
+                        for sys2 in root.findall('system'):
+                            nm2 = sys2.find('name')
+                            if nm2 is not None and nm2.text.strip().lower() == real.lower():
+                                emu2, core2 = find_and_parse(sys2)
+                                break
+                # on ne remplace que ce qui manquait
+                if not emulator:
+                    emulator = emu2
+                if not core:
+                    core     = core2
+
+        except Exception:
+            # si problème de parsing ou fichier manquant, on laisse emulator/core vides
+            pass
+
+    return emulator, core
+
+def get_core_folder_name(core_name: str) -> str:
+    """
+    Ouvre le fichier <core_name>_libretro.info dans
+    <RetroBat>/emulators/retroarch/info/ et extrait la ligne :
+        name = "Library Name"
+    pour renvoyer exactement la chaîne entre guillemets,
+    par exemple "MAME 2003 (0.78)".
+    """
+    # 1) Chemin vers le dossier info de RetroArch
+    #    on part de retrobat_root défini en haut du fichier
+    info_dir = os.path.join(retrobat_root,"emulators", "retroarch", "info")
+    info_file = os.path.join(info_dir,f"{core_name}_libretro.info")
+
+    try:
+        with open(info_file, encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("corename"):
+                    # on s'attend à : name = "Library Name"
+                    parts = line.split("=", 1)[1].strip()
+                    # retire les guillemets s'il y en a
+                    if parts.startswith('"') and parts.endswith('"'):
+                        return parts[1:-1]
+                    # sinon on renvoie brut
+                    return parts
     except FileNotFoundError:
-        logger.debug(f"es_settings.cfg non trouvé à '{cfg_path}'")
-        return "", ""
+        logger.warning(f"Info file not found: {info_file}")
     except Exception as e:
-        logger.debug(f"Impossible de parser '{cfg_path}': {e}")
-        return "", ""
+        logger.error(f"Error parsing info file {info_file}: {e}")
+
+    return ""
+
+def get_system_platform(system_name: str) -> str:
+    """
+    Lit es_systems.cfg et renvoie la balise <platform> pour <system><name>system_name</name>.
+    """
+    retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
+    es_home       = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
+    systems_cfg   = os.path.join(es_home, "es_systems.cfg")
+    try:
+        tree = ET.parse(systems_cfg)
+        root = tree.getroot()
+        for sys_elem in root.findall('system'):
+            nm = sys_elem.find('name')
+            if nm is not None and nm.text.strip().lower() == system_name.lower():
+                plat = sys_elem.find('platform')
+                return plat.text.strip().lower() if plat is not None and plat.text else ""
+    except Exception:
+        pass
+    return ""
 
 def get_game_emulator(system_name: str, game_name: str) -> (str, str):
     """
@@ -405,17 +517,26 @@ class LedEventHandler(FileSystemEventHandler):
         try:
             tree = ET.parse(xml_path)
             root = tree.getroot()
-            for layout in root.findall(f".//layout[@panelButtons='{btn_cnt}']"):
+            for layout in root.findall(".//layout"):
+                # lire la valeur panelButtons (0 si absent)
+                try:
+                    pcount = int(layout.get('panelButtons', '0'))
+                except ValueError:
+                    continue
+                # n’inclure que si panelButtons <= btn_cnt
+                if pcount > btn_cnt:
+                    continue
+
                 name = layout.get('name') or layout.get('type')
                 mapping = []
 
-                # – Joystick
+                # Joystick
                 joy = layout.find('joystick')
                 if joy is not None:
                     c = joy.get('color', DEFAULT_COLOR).upper()
                     mapping.append(("JOY", "OFF" if c == "BLACK" else c))
 
-                # – Chaque bouton
+                # Boutons
                 for btn in layout.findall('button'):
                     phys = btn.get('physical')
                     idn  = btn.get('id', '').upper()
@@ -521,9 +642,14 @@ class LedEventHandler(FileSystemEventHandler):
             self.current_game = None
             self.in_game      = False
 
+            # récupérer le nom exact du dossier remaps pour le core système
             emu_sys, core_sys = get_system_emulator(system)
+            remap_folder_sys = get_core_folder_name(core_sys)
             if emu_sys or core_sys:
-                logger.info(f"  Système '{system}' → emulator='{emu_sys}', core='{core_sys}'")
+                logger.info(
+                    f"  Système '{system}' → emulator={emu_sys}, "
+                    f"core={core_sys}, remaps_folder='{remap_folder_sys}'"
+                )
             else:
                 logger.info(f"  Aucun émulateur par défaut défini pour '{system}'")
 
@@ -537,6 +663,10 @@ class LedEventHandler(FileSystemEventHandler):
 
         # —————— 2) game-selected ——————
         if ev == 'game-selected' or self.in_game :
+
+            plat = get_system_platform(system)
+            if 'arcade' in plat:
+                logger.info(f"  Plateforme '{plat}' marque arcade → pas de remap généré")
 
             # On n’est pas encore en jeu physique (juste menu “jeu”)
             self.in_game      = False
@@ -559,22 +689,168 @@ class LedEventHandler(FileSystemEventHandler):
                 self.current_game_idx = 0
                 self.game_layouts     = []
 
-                # 3) Log émulateur système + override éventuel
+                # 3) Log émulateur système + remaps folder
                 emu_sys, core_sys = get_system_emulator(system)
+                remap_folder_sys = get_core_folder_name(core_sys)
                 if emu_sys or core_sys:
-                    logger.info(f"    Système '{system}' → emulator='{emu_sys}', core='{core_sys}'")
+                    logger.info(f"    Système '{system}' → emulator={emu_sys}, core={core_sys}, remaps_folder='{remap_folder_sys}'")
                 else:
                     logger.info(f"    Aucun émulateur système défini pour '{system}'")
 
+                # 4) Override éventuel pour le jeu ; sinon fallback sur système
                 emu_game, core_game = get_game_emulator(system, game)
+                if not emu_game:
+                    emu_game = emu_sys
+                if not core_game:
+                    core_game = core_sys
+
+                remap_folder_game = get_core_folder_name(core_game)
+                logger.info(
+                    f"    Jeu '{game}' → emulator={emu_game}, "
+                    f"core={core_game}, remaps_folder='{remap_folder_game}'"
+                )
+                # récupérer le nom exact du dossier remaps pour le core jeu
                 if emu_game or core_game:
-                    logger.info(f"    Jeu '{game}' override → emulator='{emu_game}', core='{core_game}'")
-                else:
-                    logger.info(f"    Pas d'override dans gamelist.xml pour '{game}' (fallback système)")
+                    remap_folder_game = get_core_folder_name(core_game)
+                    logger.info(
+                        f"    Jeu '{game}' override → emulator={emu_game}, "
+                        f"core={core_game}, remaps_folder='{remap_folder_game}'"
+                    )
+
 
                 # 4) Charger les layouts “jeu” via XML
                 game_xml_path = os.path.join(SYSTEMS_DIR, system, f"{game}.xml")
                 self.game_layouts = self._load_layouts_from_xml(game_xml_path)
+                # —————————————————————————————————————————————————————
+                # 7) GÉNÉRATION DU .rmp APRÈS AVOIR APPLIQUÉ LE LAYOUT COURANT
+                # —————————————————————————————————————————————————————
+                if remap_folder_game:
+                    # chemin vers remaps/<core_folder>
+                    remaps_root = os.path.join(retrobat_root,
+                                               "emulators","retroarch","config","remaps")
+                    target_dir = os.path.join(remaps_root, remap_folder_game)
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    # nom du fichier de sortie
+                    target_rmp = os.path.join(target_dir, f"{game}.rmp")
+
+                    # Le layout courant (défini par _apply_saved_layout ou fallback)
+                    layout_name = self.game_layouts[self.current_game_idx]['name'] \
+                                  if self.game_layouts else self.system_layouts[self.current_layout_idx]['name']
+
+                    # choisir le template .rmp
+                    plugin_dir  = SYSTEMS_DIR
+                    plugin_rmp1 = os.path.join(plugin_dir, f"{system}-{layout_name}.rmp")
+                    plugin_rmp0 = os.path.join(plugin_dir, f"{system}.rmp")
+                    src_rmp = plugin_rmp1 if os.path.isfile(plugin_rmp1) else \
+                              (plugin_rmp0 if os.path.isfile(plugin_rmp0) else None)
+
+                    # ——————————————————————————————————————————————————————————
+                    # Génération du .rmp :
+                    #   1) on cherche un template (system-layout ou system-game-layout)
+                    #   2) si trouvé, on copie comme avant
+                    #   3) sinon, on génère un .rmp minimal à partir du XML (retropad_id)
+                    # ——————————————————————————————————————————————————————————
+
+                    if src_rmp:
+                        # 2) On a un template : copie et remplacement de <p>
+                        logger.info(f"  Génération remap depuis '{os.path.basename(src_rmp)}' → '{target_rmp}'")
+                        cfg     = _read_panel_cfg()
+                        players = cfg.getint('Panel', 'players_count', fallback=1)
+                        with open(src_rmp, 'r', encoding='utf-8') as src, \
+                             open(target_rmp, 'w', encoding='utf-8') as dst:
+                            for line in src:
+                                if '<p>' in line:
+                                    for p in range(1, players + 1):
+                                        dst.write(line.replace('<p>', str(p)))
+                                else:
+                                    dst.write(line)
+
+                    else:
+                        # === Fallback : pas de template .rmp, on génère depuis le XML ===
+                        cfg      = _read_panel_cfg()
+                        # Reconstruire phys_to_label pour les boutons “spéciaux”
+                        phys_to_label = {}
+                        total = cfg.getint('Panel', 'buttons_count', fallback=0)
+                        for i in range(1, total + 1):
+                            opt = f'panel_button_{i}'
+                            if cfg.has_option('Panel', opt):
+                                phys = cfg.get('Panel', opt).rstrip(';')
+                                phys_to_label[phys] = f"B{i}"
+                        for opt, lab in [
+                                ('panel_button_select', 'COIN'),
+                                ('panel_button_start',  'START'),
+                                ('panel_button_joy',    'JOY')
+                            ]:
+                            if cfg.has_option('Panel', opt):
+                                phys = cfg.get('Panel', opt).rstrip(';')
+                                phys_to_label[phys] = lab
+
+                        btn_cnt  = cfg.getint('Panel', 'Player1_buttons_count',
+                                    fallback=cfg.getint('Panel','buttons_count',fallback=0))
+                        panel_id = self.panel_id
+
+                        xml_game     = os.path.join(SYSTEMS_DIR, system, f"{game}.xml")
+                        xml_fallback = os.path.join(SYSTEMS_DIR, f"{system}.xml")
+                        xml_to_parse = xml_game if os.path.isfile(xml_game) else xml_fallback
+
+                        try:
+                            tree = ET.parse(xml_to_parse)
+                            root = tree.getroot()
+                            # Sélection du layout courant
+                            selector    = f".//layout[@panelButtons='{btn_cnt}'][@name='{layout_name}']"
+                            layout_elem = root.find(selector) or root.find(f".//layout[@panelButtons='{btn_cnt}']")
+                            if layout_elem is None:
+                                raise ValueError(f"No layout[@panelButtons={btn_cnt}] in {xml_to_parse}")
+
+                            remap_lines = []
+                            # 1) device
+                            remap_lines.append(f'input_libretro_device_p{panel_id} = "{panel_id}"\n')
+                            # 2) dpad mode
+                            remap_lines.append(f'input_player{panel_id}_analog_dpad_mode = "0"\n')
+
+                            # 3) joystick (optionnel)
+                            #    on peut l’omettre si pas de mapping
+
+                            # 4) chaque bouton
+                            for btn in layout_elem.findall('button'):
+                                phys       = btn.get('physical')
+                                retroid    = btn.get('retropad_id') or ''
+                                game_btn   = btn.get('gameButton', 'NONE').upper()
+                                controller = btn.get('controller', '').lower()
+
+                                # Si gameButton défini (START/COIN/JOY) on l’utilise
+                                if game_btn in ('START', 'COIN', 'JOY'):
+                                    label = game_btn.lower()
+                                # Sinon si controller est défini, on l’utilise, avec remplacements :
+                                elif controller:
+                                    label = controller.lower()
+                                    # remplacements demandés
+                                    if label == 'pageup':
+                                        label = 'l'
+                                    elif label == 'pagedown':
+                                        label = 'r'
+                                    elif label == 'select':
+                                        label = 'coin'
+                                    # les autres (a, b, x, y, l, r…) restent tels quels
+                                # Sinon, on retombe sur phys_to_label (B1, B2…)
+                                else:
+                                    label = phys_to_label.get(phys, f"B{phys}")
+
+                                # N’écrire que si on a bien un retropad_id
+                                if retroid:
+                                    remap_lines.append(f'input_player{panel_id}_btn_{label} = "{retroid}"\n')
+
+                            # 5) Écrire le fichier
+                            os.makedirs(os.path.dirname(target_rmp), exist_ok=True)
+                            with open(target_rmp, 'w', encoding='utf-8') as dst:
+                                dst.writelines(remap_lines)
+
+                            logger.info(
+                                f"  Remap généré dynamiquement depuis XML '{xml_to_parse}' → '{target_rmp}'"
+                            )
+                        except Exception as e:
+                            logger.error(f"  Échec génération fallback remap depuis XML: {e}")
 
                 if self.game_layouts:
                     # 5) Si on a bien des layouts “jeu”, appliquer et sauvegarder
