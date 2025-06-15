@@ -812,6 +812,10 @@ class LedEventHandler(FileSystemEventHandler):
                         xml_fallback = os.path.join(SYSTEMS_DIR, f"{system}.xml")
                         xml_to_parse = xml_game if os.path.isfile(xml_game) else xml_fallback
 
+                        if not os.path.isfile(xml_game) and not os.path.isfile(xml_fallback):
+                            logger.warning(f"  Pas de XML jeu ni système trouvé pour '{system}/{game}', skip remap")
+                            return
+
                         try:
                             tree = ET.parse(xml_to_parse)
                             root = tree.getroot()
