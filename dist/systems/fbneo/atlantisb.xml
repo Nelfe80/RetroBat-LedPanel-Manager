@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<system name="arcade">
+  <game name="atlantisb" rom="atlantisb">
+    <layouts>
+      <layout panelButtons="8" type="8-Button">
+        <joystick color="Blue"/>
+        <button id="1" physical="4" controller="B" gameButton="y" x="50" y="40" color="Black" function="None"/>
+        <button id="2" physical="3" controller="A" gameButton="x" x="30" y="40" color="Yellow" function="Fire 1 (Cocktail)"/>
+        <button id="3" physical="5" controller="PAGEUP" gameButton="leftshoulder" x="70" y="40" color="Black" function="None"/>
+        <button id="4" physical="7" controller="L2" gameButton="lefttrigger" x="90" y="40" color="Black" function="None"/>
+        <button id="5" physical="1" controller="Y" gameButton="a" x="30" y="60" color="Black" function="None"/>
+        <button id="6" physical="2" controller="X" gameButton="b" x="50" y="60" color="Black" function="None"/>
+        <button id="7" physical="6" controller="PAGEDOWN" gameButton="rightshoulder" x="70" y="60" color="Black" function="None"/>
+        <button id="8" physical="8" controller="R2" gameButton="righttrigger" x="90" y="60" color="Black" function="None"/>
+        <button id="START" physical="9" controller="START" gameButton="start" x="85" y="90" color="White" function="Start"/>
+        <button id="COIN" physical="10" controller="SELECT" gameButton="back" x="95" y="90" color="Yellow" function="Coin"/>
+      </layout>
+      <layout panelButtons="6" type="6-Button">
+        <joystick color="Blue"/>
+        <button id="1" physical="4" controller="B" gameButton="y" x="50" y="40" color="Black" function="None"/>
+        <button id="2" physical="3" controller="A" gameButton="x" x="30" y="40" color="Yellow" function="Fire 1 (Cocktail)"/>
+        <button id="3" physical="5" controller="PAGEUP" gameButton="leftshoulder" x="70" y="40" color="Black" function="None"/>
+        <button id="4" physical="1" controller="Y" gameButton="a" x="30" y="60" color="Black" function="None"/>
+        <button id="5" physical="2" controller="X" gameButton="b" x="50" y="60" color="Black" function="None"/>
+        <button id="6" physical="6" controller="PAGEDOWN" gameButton="rightshoulder" x="70" y="60" color="Black" function="None"/>
+        <button id="START" physical="7" controller="START" gameButton="start" x="85" y="90" color="White" function="Start"/>
+        <button id="COIN" physical="8" controller="SELECT" gameButton="back" x="95" y="90" color="Yellow" function="Coin"/>
+      </layout>
+      <layout panelButtons="4" type="4-Button">
+        <joystick color="Blue"/>
+        <button id="1" physical="4" controller="B" gameButton="y" x="50" y="40" color="Black" function="None"/>
+        <button id="2" physical="3" controller="A" gameButton="x" x="30" y="40" color="Yellow" function="Fire 1 (Cocktail)"/>
+        <button id="3" physical="1" controller="Y" gameButton="a" x="30" y="60" color="Black" function="None"/>
+        <button id="4" physical="2" controller="X" gameButton="b" x="50" y="60" color="Black" function="None"/>
+        <button id="START" physical="5" controller="START" gameButton="start" x="85" y="90" color="White" function="Start"/>
+        <button id="COIN" physical="6" controller="SELECT" gameButton="back" x="95" y="90" color="Yellow" function="Coin"/>
+      </layout>
+      <layout panelButtons="2" type="2-Button">
+        <joystick color="Blue"/>
+        <button id="1" physical="1" controller="A" gameButton="x" x="30" y="60" color="Yellow" function="Fire 1 (Cocktail)"/>
+        <button id="2" physical="2" controller="A" gameButton="x" x="50" y="60" color="Yellow" function="Fire 1 (Cocktail)"/>
+        <button id="START" physical="3" controller="START" gameButton="start" x="85" y="90" color="White" function="Start"/>
+        <button id="COIN" physical="4" controller="SELECT" gameButton="back" x="95" y="90" color="Yellow" function="Coin"/>
+      </layout>
+    </layouts>
+  </game>
+</system>

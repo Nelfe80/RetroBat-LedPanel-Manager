@@ -1,0 +1,3 @@
+input_libretro_device_p<p> = "1"
+input_player<p>_analog_dpad_mode = "0"
+
