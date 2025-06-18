@@ -1058,29 +1058,53 @@ class LedEventHandler(FileSystemEventHandler):
         # 9) extraire les <event> et peupler self.lip_events
         count = 0
         for ev in evroot.findall('event'):
-            b   = ev.get('button','').upper()
-            trg = ev.get('trigger','press').lower()
-            mac = ev.find('macro').get('type').lower()
-            arg = None
-            if mac == 'set_panel_colors':
-                arg = ev.find('.//colors').text.strip()
-            elif mac == 'restore_panel':
-                arg = ev.find('.//panel').text.strip()
-
-            phys = label_to_phys.get(b)
-            if phys is None:
+            b   = ev.get('button','').upper()               # ex. "B5"
+            trg = ev.get('trigger','press').lower()         # "press" ou "release"
+            phys_src = label_to_phys.get(b)                 # ex. 5
+            if phys_src is None:
                 logger.info(f"Skipping .lip event for unknown label '{b}'")
                 continue
 
-            entry = {
-                'id':      phys - 1,
-                'trigger': trg,
-                'macro':   mac,
-                'arg':     arg
-            }
-            self.lip_events.append(entry)
-            logger.info(f"Loaded .lip event: {entry}")
-            count += 1
+            # chaque <macro> dans cet <event>
+            for macro in ev.findall('macro'):
+                mtype = macro.get('type','').lower()
+                if mtype == 'set_panel_colors':
+                    arg = macro.find('.//colors').text.strip()
+                    entry = {
+                        'id':      phys_src-1,
+                        'trigger': trg,
+                        'macro':   'set_panel_colors',
+                        'arg':     arg
+                    }
+                if mtype == 'restore_panel':
+                    arg = macro.find('.//panel').text.strip()
+                    entry = {
+                        'id':      phys_src-1,
+                        'trigger': trg,
+                        'macro':   'restore_panel',
+                        'arg':     arg
+                    }
+                if mtype == 'set_button':
+                    # couleur par bouton
+                    # le texte est du type "CURRENT,B6:BLACK;" ou plusieurs mappings séparés par ';'
+                    raw = macro.find('color').text.strip().rstrip(';')
+                    # on retire le préfixe "CURRENT,"
+                    _, mapping = raw.split(',',1)      # mapping == "B6:BLACK"
+                    target, color = mapping.split(':',1)
+                    entry = {
+                        'id':      phys_src-1,
+                        'trigger': trg,
+                        'macro':   'set_button',
+                        'target':  target,   # ex. "B6"
+                        'color':   color     # ex. "BLACK"
+                    }
+                #else:
+                    # type de macro inconnu → on skippe
+                    #continue
+
+                self.lip_events.append(entry)
+                logger.info(f"Loaded .lip event: {entry}")
+                count += 1
 
         logger.info(f"Total .lip events loaded: {count}")
 
@@ -1136,14 +1160,29 @@ def joystick_listener(handler):
                     for le in handler.lip_events:
                         logger.debug(f"    → Checking .lip event {le}")
                         if le['id'] == ev.button and le['trigger'] == ('press' if pressed else 'release'):
+
+                            # --- nouvelle prise en charge set_button ---
+                            if le['macro'] == 'set_button':
+                                cmd = (
+                                    f"SetButton={handler.panel_id},"
+                                    f"{le['target']},{le['color']}"
+                                )
+                                logger.info(f"    ➡ Executing macro: {cmd}")
+                                handler.ser.write((cmd + '\n').encode('utf-8'))
+                                # on ne traite pas les autres macros pour ce même event
+                                continue
+
+                            # --- macro couleur globale ---
                             if le['macro'] == 'set_panel_colors':
                                 mapping = le['arg'].replace('CURRENT', str(handler.panel_id))
                                 cmd     = f"SetPanelColors={mapping}"
                             else:
                                 panel_arg = le['arg'].replace('CURRENT', str(handler.panel_id))
                                 cmd       = f"RestorePanel={panel_arg}"
+
                             logger.info(f"    ➡ Executing macro: {cmd}")
                             handler.ser.write((cmd + '\n').encode('utf-8'))
+                            break
 
             # — Hat (D-pad en hat) —
             elif ev.type == JOYHATMOTION:

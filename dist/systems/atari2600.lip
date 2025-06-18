@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<layout game="atari2600" version="1.0">
+
+  <events type="8-Button">
+    <event type="input" button="B5" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B5:YELLOW;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B7:BLACK;</color>
+      </macro>
+    </event>
+	<event type="input" button="B7" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B7:YELLOW;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B5:BLACK;</color>
+      </macro>
+    </event>
+	<event type="input" button="B8" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B8:ORANGE;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B6:BLACK;</color>
+      </macro>
+    </event>
+	<event type="input" button="B6" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B6:ORANGE;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B8:BLACK;</color>
+      </macro>
+    </event>
+  </events>  
+
+</layout>
