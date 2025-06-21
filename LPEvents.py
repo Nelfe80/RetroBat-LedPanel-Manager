@@ -115,23 +115,32 @@ def show_popup_tk(text, duration=600, font_size=24, alpha=0.9):
 
     threading.Thread(target=_run, daemon=True).start()
 
+
 def escape_arg_value(s: str) -> str:
     """
-    Remplace dans la chaîne s tous les caractères spéciaux
-    par vos séquences d’échappement pour le .arg batch.
+    Remplace dans la chaîne s toutes les séquences d'échappement
+    par leur caractère d'origine pour le batch .arg.
     """
-    # dictionnaire de mapping
     repl = {
-        '""':  '"',   # guillemet    → double-guillemet
-        '|A':  '&',   # esperluette  → |A
-        '|v':  ',',   # virgule      → |v
-        '|p':  '+',   # plus         → |p
-        '|%':  '!',   # point d’excl.→ |%
-        '|':  '!',   # pipe         → échappé en || (ou autre code)
-        '%%':  '%',   # pourcent     → %% (évite mod auto)
+        '""': '"',   # guillemet    → double-guillemet
+        '|A': '&',   # esperluette  → |A
+        '|v': ',',   # virgule      → |v
+        '|p': '+',   # plus         → |p
+        '|%': '!',   # point d’excl.→ |%
+        '||': '|',   # pipe         → ||
+        '%%': '%',   # pourcent     → %%
     }
-    # construire la nouvelle chaîne
-    return ''.join(repl.get(c, c) for c in s)
+    result = []
+    i = 0
+    while i < len(s):
+        seq = s[i:i+2]
+        if seq in repl:
+            result.append(repl[seq])
+            i += 2
+        else:
+            result.append(s[i])
+            i += 1
+    return ''.join(result)
 
 def get_system_emulator(system_name: str) -> (str, str):
     """
@@ -752,9 +761,18 @@ class LedEventHandler(FileSystemEventHandler):
                     # nom du fichier de sortie
                     target_rmp = os.path.join(target_dir, f"{game}.rmp")
 
+                    # if we have neither game-specific nor system layouts, skip remap
+                    if not self.game_layouts and not self.system_layouts:
+                        logger.warning(
+                            f"No layouts for '{system}/{game}' → skipping remap generation"
+                        )
+                        return
                     # Le layout courant (défini par _apply_saved_layout ou fallback)
-                    layout_name = self.game_layouts[self.current_game_idx]['name'] \
-                                  if self.game_layouts else self.system_layouts[self.current_layout_idx]['name']
+                    layout_name = (
+                        self.game_layouts[self.current_game_idx]['name']
+                        if self.game_layouts
+                        else self.system_layouts[self.current_layout_idx]['name']
+                    )
 
                     # choisir le template .rmp
                     plugin_dir  = SYSTEMS_DIR
