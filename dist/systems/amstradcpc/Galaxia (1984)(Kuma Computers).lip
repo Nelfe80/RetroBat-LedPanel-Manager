@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<layout game="Galaxia" version="1.0">
+
+  <events type="8-Button">
+    <event type="input" button="B3" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B3:WHITE;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B4:BLACK;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B5:BLACK;</color>
+      </macro>
+    </event>
+	<event type="input" button="B4" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B3:BLACK;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B4:YELLOW;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B5:BLACK;</color>
+      </macro>
+    </event>
+	<event type="input" button="B5" trigger="press">
+      <macro type="set_button">
+        <color>CURRENT,B3:BLACK;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B4:BLACK;</color>
+      </macro>
+	  <macro type="set_button">
+        <color>CURRENT,B5:ORANGE;</color>
+      </macro>
+    </event>
+	<event type="input" button="COIN" trigger="press">
+      <macro type="blink_button">
+        <color>CURRENT,B3,WHITE,BLACK,200,200;</color>
+      </macro>
+	  <macro type="blink_button">
+        <color>CURRENT,B4,YELLOW,BLACK,300,200;</color>
+      </macro>
+	  <macro type="blink_button">
+        <color>CURRENT,B5,ORANGE,BLACK,400,200;</color>
+      </macro>
+    </event>
+  </events>  
+
+</layout>

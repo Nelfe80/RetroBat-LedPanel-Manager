@@ -672,6 +672,11 @@ class LedEventHandler(FileSystemEventHandler):
         # Parse EmulationStation event
         ev, system, raw2 = parse_es_event(ES_EVENT_FILE)
         logger.debug(f"on_modified: ev='{ev}', system='{system}' (in_game={self.in_game})")
+        # récupérer le nom exact du dossier remaps pour le core système
+        emu_sys, core_sys = get_system_emulator(system)
+        remap_folder_sys = get_core_folder_name(core_sys)
+        if remap_folder_sys == "Caprice32":
+            remap_folder_sys = "cap32"
 
         # —————— 1) system-selected: switch system, exit game mode
         if ev == 'system-selected' and (system != self.last_system or self.in_game):
@@ -681,9 +686,8 @@ class LedEventHandler(FileSystemEventHandler):
             self.current_game = None
             self.in_game      = False
 
-            # récupérer le nom exact du dossier remaps pour le core système
-            emu_sys, core_sys = get_system_emulator(system)
-            remap_folder_sys = get_core_folder_name(core_sys)
+
+
             if emu_sys or core_sys:
                 logger.info(
                     f"  Système '{system}' → emulator={emu_sys}, "
@@ -730,8 +734,6 @@ class LedEventHandler(FileSystemEventHandler):
                 self.game_layouts     = []
 
                 # 3) Log émulateur système + remaps folder
-                emu_sys, core_sys = get_system_emulator(system)
-                remap_folder_sys = get_core_folder_name(core_sys)
                 if emu_sys or core_sys:
                     logger.info(f"    Système '{system}' → emulator={emu_sys}, core={core_sys}, remaps_folder='{remap_folder_sys}'")
                 else:
@@ -745,18 +747,12 @@ class LedEventHandler(FileSystemEventHandler):
                     core_game = core_sys
 
                 remap_folder_game = get_core_folder_name(core_game)
+                if remap_folder_game == "Caprice32":
+                    remap_folder_game = "cap32"
                 logger.info(
                     f"    Jeu '{game}' → emulator={emu_game}, "
                     f"core={core_game}, remaps_folder='{remap_folder_game}'"
                 )
-                # récupérer le nom exact du dossier remaps pour le core jeu
-                if emu_game or core_game:
-                    remap_folder_game = get_core_folder_name(core_game)
-                    logger.info(
-                        f"    Jeu '{game}' override → emulator={emu_game}, "
-                        f"core={core_game}, remaps_folder='{remap_folder_game}'"
-                    )
-
 
                 # 4) Charger les layouts “jeu” via XML
                 game_xml_path = os.path.join(SYSTEMS_DIR, system, f"{game}.xml")
@@ -842,6 +838,7 @@ class LedEventHandler(FileSystemEventHandler):
                         xml_game     = os.path.join(SYSTEMS_DIR, system, f"{game}.xml")
                         xml_fallback = os.path.join(SYSTEMS_DIR, f"{system}.xml")
                         xml_to_parse = xml_game if os.path.isfile(xml_game) else xml_fallback
+                        logger.info(f"\n xml_game = {xml_game}\n xml_fallback = {xml_fallback}\n xml_to_parse = {xml_to_parse}\n")
 
                         if not os.path.isfile(xml_game) and not os.path.isfile(xml_fallback):
                             logger.warning(f"  Pas de XML jeu ni système trouvé pour '{system}/{game}', skip remap")
@@ -854,9 +851,22 @@ class LedEventHandler(FileSystemEventHandler):
                             # Nombre de joueurs définis dans config.ini
                             players = cfg.getint('Panel', 'players_count', fallback=1)
                             remap_lines = []
-
+                            # On ne veut qu’un seul keyboard_mode=1
+                            keyboard_mode_used = False
                             # Boucle pour chaque joueur
                             for panel_id in range(1, players + 1):
+                                # 0) vérification d’un fallback layout “system|game” dans config.ini
+                                cfg = _read_panel_cfg()
+                                game_key = f"{system}|{game}"
+                                if cfg.has_section('PanelDefaults') and cfg.has_option('PanelDefaults', game_key):
+                                    saved_game_layout = cfg.get('PanelDefaults', game_key)
+                                    if saved_game_layout:
+                                        logger.info(f"  Utilisation du layout sauvegardé pour '{game_key}' → '{saved_game_layout}'")
+                                        layout_name = saved_game_layout
+                                    else:
+                                        logger.debug(f"  Clé '{game_key}' vide dans PanelDefaults – on garde '{layout_name}'")
+                                else:
+                                    logger.debug(f"  Pas de layout jeu-spécifique dans config.ini pour '{game_key}'")
                                 # 1) Nombre de boutons max pour ce joueur
                                 btn_cfg = cfg.getint(
                                     'Panel', f'player{panel_id}_buttons_count',
@@ -901,40 +911,55 @@ class LedEventHandler(FileSystemEventHandler):
                                 # 3) Génération des lignes de config
                                 device    = layout_elem.get('retropad_device', '1')
                                 dpad_mode = layout_elem.get('retropad_analog_dpad_mode', '0')
-                                remap_lines.append(f'input_libretro_device_p{panel_id}      = "{device}"\n')
+                                raw_keyboard_mode = layout_elem.get('retropad_keyboard_mode', '0')
+                                remap_lines.append(f'input_libretro_device_p{panel_id} = "{device}"\n')
                                 remap_lines.append(f'input_player{panel_id}_analog_dpad_mode = "{dpad_mode}"\n')
 
-                                # Boutons, filtrés par physical <= btn_cfg et <= xml_max
+                                if raw_keyboard_mode == "1" and not keyboard_mode_used:
+                                    btn_type = "key"
+                                    keyboard_mode_used = True
+                                else:
+                                    btn_type = "btn"
+
+                                # Boucle des boutons: on utilise l'attribut 'id' pour inclure START/COIN
                                 for btn in layout_elem.findall('button'):
-                                    phys_str = btn.get('physical') or ''
+                                    btn_id = btn.get('id', '').upper()
+                                    phys_str = btn.get('physical', '')
+                                    # calcul phys for numeric ids
                                     try:
                                         phys = int(phys_str)
-                                    except ValueError:
-                                        continue
-                                    if phys > btn_cfg or (xml_max and phys > xml_max):
-                                        continue
-
+                                    except (ValueError, TypeError):
+                                        phys = 0
+                                    # inclure START et COIN toujours
+                                    if btn_id not in ('START', 'COIN'):
+                                        if (phys > btn_cfg) or (xml_max and phys > xml_max):
+                                            continue
                                     rid_str = btn.get('retropad_id') or ''
                                     if not rid_str:
                                         continue
 
-                                    game_btn   = btn.get('gameButton', 'NONE').upper()
-                                    controller = btn.get('controller', '').lower()
-                                    if game_btn in ('START', 'COIN', 'JOY'):
-                                        label = game_btn.lower()
-                                    elif controller:
+                                    # déterminer le label selon 'id'
+                                    if btn_id == 'START':
+                                        label = 'start'
+                                    elif btn_id == 'COIN':
+                                        label = 'select'
+                                    else:
+                                        controller = btn.get('controller', '').lower()
                                         if controller == 'pageup':
                                             label = 'l'
                                         elif controller == 'pagedown':
                                             label = 'r'
                                         elif controller == 'select':
-                                            label = 'coin'
-                                        else:
+                                            label = 'select'
+                                        elif controller == 'start':
+                                            label = 'start'
+                                        elif controller:
                                             label = controller
-                                    else:
-                                        label = phys_to_label.get(phys_str, f"B{phys_str}")
+                                        else:
+                                            label = phys_to_label.get(phys_str, f"B{phys_str}")
 
-                                    remap_lines.append(f'input_player{panel_id}_btn_{label} = "{rid_str}"\n')
+                                    logger.info(f"input_player{panel_id}_{btn_type}_{label} = '{rid_str}'")
+                                    remap_lines.append(f'input_player{panel_id}_{btn_type}_{label} = "{rid_str}"\n')
 
                             # 4) Écriture du fichier généré
                             os.makedirs(os.path.dirname(target_rmp), exist_ok=True)
@@ -1070,8 +1095,13 @@ class LedEventHandler(FileSystemEventHandler):
                 return
 
             # ** Nouveau : filtrage sur le name du layout **
-            lip_name = evroot.get('name')  # ex. "Arcade Shark"
-            current_layout = self.system_layouts[self.current_layout_idx]['name']
+            lip_name = evroot.get('name')  # ex. "Arcade Shark" ou "Keyboard Mapping"
+            # on choisit le layout actif : jeu si on est en game-mode, sinon système
+            if self.current_game is not None and self.game_layouts:
+                current_layout = self.game_layouts[self.current_game_idx]['name']
+            else:
+                current_layout = self.system_layouts[self.current_layout_idx]['name']
+
             if lip_name and lip_name != current_layout:
                 logger.info(
                     f"Skipping .lip events: .lip is for layout '{lip_name}' "
@@ -1163,6 +1193,23 @@ class LedEventHandler(FileSystemEventHandler):
                         'target':  target,   # ex. "B6"
                         'color':   color     # ex. "BLACK"
                     }
+                if mtype == 'blink_button':
+                    # couleur par bouton
+                    # le texte est du type "CURRENT,B6:BLACK;" ou plusieurs mappings séparés par ';'
+                    raw = macro.find('color').text.strip().rstrip(';')
+                    # on retire le préfixe "CURRENT,"
+                    _, mapping = raw.split(',',1)      # mapping == "B6:BLACK"
+                    target, color1, color2, timecolor1, timecolor2 = mapping.split(',',5)
+                    entry = {
+                        'id':      phys_src-1,
+                        'trigger': trg,
+                        'macro':   'blink_button',
+                        'target':  target,   # ex. "B6"
+                        'color1':   color1,     # ex. "BLACK"
+                        'color2':   color2,     # ex. "BLACK"
+                        'timecolor1':   timecolor1,     # ex. "200"
+                        'timecolor2':   timecolor2     # ex. "200"
+                    }
                 #else:
                     # type de macro inconnu → on skippe
                     #continue
@@ -1236,7 +1283,16 @@ def joystick_listener(handler):
                                 handler.ser.write((cmd + '\n').encode('utf-8'))
                                 # on ne traite pas les autres macros pour ce même event
                                 continue
-
+                            if le['macro'] == 'blink_button':
+                                #BlinkButton=1,B3,PINK,BLACK,300,300
+                                cmd = (
+                                    f"BlinkButton={handler.panel_id},"
+                                    f"{le['target']},{le['color1']},{le['color2']},{le['timecolor1']},{le['timecolor2']}"
+                                )
+                                logger.info(f"    ➡ Executing macro: {cmd}")
+                                handler.ser.write((cmd + '\n').encode('utf-8'))
+                                # on ne traite pas les autres macros pour ce même event
+                                continue
                             # --- macro couleur globale ---
                             if le['macro'] == 'set_panel_colors':
                                 mapping = le['arg'].replace('CURRENT', str(handler.panel_id))
