@@ -37,13 +37,13 @@
     </event>
 	<event type="input" button="COIN" trigger="press">
       <macro type="blink_button">
-        <color>CURRENT,B3,WHITE,BLACK,200,200;</color>
+        <color>CURRENT,B3,WHITE,BLACK,100,100;</color>
       </macro>
 	  <macro type="blink_button">
-        <color>CURRENT,B4,YELLOW,BLACK,300,200;</color>
+        <color>CURRENT,B4,YELLOW,BLACK,100,100;</color>
       </macro>
 	  <macro type="blink_button">
-        <color>CURRENT,B5,ORANGE,BLACK,400,200;</color>
+        <color>CURRENT,B5,ORANGE,BLACK,100,100;</color>
       </macro>
     </event>
   </events>  

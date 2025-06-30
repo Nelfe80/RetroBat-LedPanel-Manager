@@ -139,6 +139,7 @@ color_map = {
     'PURPLE': (0, 2047, 4095, 0, True),
     'VIOLET': (2400, 2873, 3195, 2547, True),
     'GREY':   (2047, 2047, 3073, 1026, True),
+    'GRAY':   (4095, 3073, 4095, 2047, True),
     'PINK':   (1026, 3073, 2047, 1026, True),
     'COL1': (0, 0, 0, 0, True),
     'COL2': (0, 0, 0, 1026, True),
@@ -792,6 +793,12 @@ blink_tasks          = []
 restore_tasks        = []
 macro_tasks          = []
 
+panel_id         = None
+btn_count_global = None
+coin_idx         = None
+start_idx        = None
+joy_idx          = None
+
 # ----- PWM helpers -----
 def compute_off(col):
     b,g,v,r,inv = color_map[col]
@@ -887,6 +894,15 @@ def set_panel_colors(panels,list_str,save_default=False):
         if ':' in pair:
             b,c=pair.split(':',1)
             items[b.strip().upper()]=c.strip().upper()
+    
+    # Remplacement COIN/START/JOY → B{idx}
+    if coin_idx is not None and 'COIN' in items:
+        items[f"B{coin_idx}"] = items.pop('COIN')
+    if start_idx is not None and 'START' in items:
+        items[f"B{start_idx}"] = items.pop('START')
+    if joy_idx is not None and 'JOY' in items:
+        items[f"B{joy_idx}"] = items.pop('JOY')
+    
     for panel in panels:
         if save_default:
             default_panel_colors[panel]={}
@@ -1087,7 +1103,17 @@ while True:
         continue
 
     # on nouvelle commande, arrête blinks & macros
-    stop_all_effects()
+    #stop_all_effects()
+    # parse cmd pour voir si c’est un BlinkButton
+    if '=' in line:
+        cmd, rest = line.split('=', 1)
+        # n’arrêtez pas les blink_tasks si on reçoit un BlinkButton
+        if cmd not in ('BlinkButton',):
+            stop_all_effects()
+    else:
+       # pour les commandes sans "=", vous pouvez avoir StopBlink, etc.
+       if not line.startswith('BlinkButton'):
+           stop_all_effects()
 
     # parse cmd
     if '=' in line:
@@ -1108,6 +1134,26 @@ while True:
         del args[idx:idx+2]
 
     try:
+        if cmd == 'INIT':
+            params = {}
+            for part in args:
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    params[k.strip().lower()] = v.strip()
+            try:
+                panel_id         = int(params['panel'])
+                btn_count_global = int(params['count'])
+                coin_idx         = int(params['select'])
+                start_idx        = int(params['start'])
+                joy_idx          = int(params['joy'])
+                print("OK: INIT →",
+                      f"panel_id={panel_id}, btn_count={btn_count_global},",
+                      f"COIN→B{coin_idx}, START→B{start_idx}, JOY→B{joy_idx}")
+            except KeyError as e:
+                print(f"Error: param INIT manquant → {e}")
+            except ValueError as e:
+                print(f"Error: valeur INIT invalide → {e}")
+            continue
         if cmd=='PING':
             led.value(not led.value()); print("PONG")
 

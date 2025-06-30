@@ -28,20 +28,7 @@
       <button id="START" physical="7" controller="START" retropad_id="3" gameButton="START" function="Start" x="85" y="90" color="Black"/>
       <button id="COIN" physical="8" controller="SELECT" retropad_id="2" gameButton="COMBO" function="Select" x="95" y="90" color="Black"/>
     </layout>
-    <layout panelButtons="8" type="8-Button">
-      <joystick color="White"/>
-      <button id="1" physical="1" controller="A" retropad_id="0" gameButton="FIRE1" function="A" x="30" y="60" color="Red"/>
-      <button id="2" physical="2" controller="B" retropad_id="8" gameButton="FIRE2" function="B" x="50" y="60" color="Red"/>
-      <button id="3" physical="6" controller="PAGEDOWN" retropad_id="9" gameButton="FIRE3" function="R" x="70" y="60" color="Red"/>
-      <button id="4" physical="8" controller="R2" retropad_id="13" gameButton="F2" function="R2" x="90" y="60" color="Black"/>
-      <button id="5" physical="3" controller="X" retropad_id="11" gameButton="NONE" function="X" x="30" y="40" color="Black"/>
-      <button id="6" physical="4" controller="Y" retropad_id="14" gameButton="NONE" function="Y" x="50" y="40" color="Black"/>
-      <button id="7" physical="5" controller="PAGEUP" retropad_id="10" gameButton="CTRL" function="L" x="70" y="40" color="Black"/>
-      <button id="8" physical="7" controller="L2" retropad_id="12" gameButton="F1" function="L2" x="90" y="40" color="Black"/>
-      <button id="START" physical="9" controller="START" retropad_id="11" gameButton="START" function="Start" x="85" y="90" color="Black"/>
-      <button id="COIN" physical="10" controller="SELECT" retropad_id="10" gameButton="COMBO" function="Select" x="95" y="90" color="Black"/>
-    </layout>
-	<layout panelButtons="8" type="8-Button" name="Keyboard Mapping" retropad_device="259" retropad_keyboard_mode="1" retropad_analog_dpad_mode="0">
+	<layout panelButtons="8" type="8-Button" retropad_device="259" retropad_keyboard_mode="1" retropad_analog_dpad_mode="0">
       <joystick color="White"/>
 	  <button id="UP" physical="0" controller="UP" retropad_id="113" gameButton="UP" function="UP" x="0" y="0" color="Black"/>
 	  <button id="DOWN" physical="0" controller="DOWN" retropad_id="97" gameButton="DOWN" function="DOWN" x="0" y="0" color="Black"/>
@@ -51,10 +38,10 @@
       <button id="2" physical="2" controller="B" retropad_id="32" gameButton="" function="" x="50" y="60" color="Black"/>
       <button id="3" physical="6" controller="PAGEDOWN" retropad_id="" gameButton="" function="" x="70" y="60" color="Black"/>
       <button id="4" physical="8" controller="R2" retropad_id="" gameButton="" function="" x="90" y="60" color="Black"/>
-      <button id="5" physical="3" controller="X" retropad_id="49" gameButton="" function="" x="30" y="40" color="WHITE"/>
-      <button id="6" physical="4" controller="Y" retropad_id="50" gameButton="" function="" x="50" y="40" color="CYAN"/>
-      <button id="7" physical="5" controller="PAGEUP" retropad_id="51" gameButton="" function="" x="70" y="40" color="BLUE"/>
-      <button id="8" physical="7" controller="L2" retropad_id="52" gameButton="" function="" x="90" y="40" color="PURPLE"/>
+      <button id="5" physical="3" controller="X" retropad_id="258" gameButton="" function="" x="30" y="40" color="WHITE"/>
+      <button id="6" physical="4" controller="Y" retropad_id="257" gameButton="" function="" x="50" y="40" color="CYAN"/>
+      <button id="7" physical="5" controller="PAGEUP" retropad_id="259" gameButton="" function="" x="70" y="40" color="BLUE"/>
+      <button id="8" physical="7" controller="L2" retropad_id="260" gameButton="" function="" x="90" y="40" color="PURPLE"/>
       <button id="START" physical="9" controller="START" retropad_id="" gameButton="" function="" x="85" y="90" color="Black"/>
       <button id="COIN" physical="10" controller="SELECT" retropad_id="13" gameButton="RETURN" function="CHOOSE MODE" x="95" y="90" color="Red"/>
     </layout>
