@@ -41,5 +41,18 @@
       <button id="START" physical="9" controller="START" retropad_id="3" gameButton="START" function="Start" x="85" y="90" color="Purple"/>
       <button id="COIN" physical="10" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Black"/>
     </layout>
+	<layout panelButtons="8" type="8-Button" name="Virtual Stick">
+      <joystick color="Green"/>
+      <button id="1" physical="1" controller="A" retropad_id="8" gameButton="NONE" function="None" x="30" y="60" color="Cyan"/>
+      <button id="2" physical="2" controller="B" retropad_id="0" gameButton="NONE" function="None" x="50" y="60" color="Pink"/>
+      <button id="3" physical="6" controller="PAGEDOWN" retropad_id="11" gameButton="NONE" function="None" x="70" y="60" color="Green"/>
+      <button id="4" physical="8" controller="R2" retropad_id="13" gameButton="NONE" function="None" x="90" y="60" color="Green"/>
+      <button id="5" physical="3" controller="X" retropad_id="9" gameButton="NONE" function="None" x="30" y="40" color="Green"/>
+      <button id="6" physical="4" controller="Y" retropad_id="1" gameButton="NONE" function="None" x="50" y="40" color="Green"/>
+      <button id="7" physical="5" controller="PAGEUP" retropad_id="10" gameButton="NONE" function="None" x="70" y="40" color="Green"/>
+      <button id="8" physical="7" controller="L2" retropad_id="12" gameButton="NONE" function="None" x="90" y="40" color="Green"/>
+      <button id="START" physical="9" controller="START" retropad_id="3" gameButton="START" function="Start" x="85" y="90" color="Yellow"/>
+      <button id="COIN" physical="10" controller="SELECT" retropad_id="2" gameButton="COIN" function="Coin" x="95" y="90" color="Grey"/>
+    </layout>
   </layouts>
 </system>

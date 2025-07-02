@@ -32,6 +32,7 @@ OFF_COLOR        = 'OFF'
 DEFAULT_COLOR    = 'WHITE'
 TEXT_COLOR       = '#FFFFFF'
 BG_COLOR         = '#2961b0'
+CONFIG_CACHE     = None
 
 retrobat_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
@@ -338,14 +339,17 @@ def get_game_emulator(system_name: str, game_name: str) -> (str, str):
         return "", ""
 
 
-def _read_panel_cfg() -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    try:
-        with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as fh:
-            cfg.read_file(fh)
-    except Exception:
-        cfg.read(PANEL_CONFIG_INI)
-    return cfg
+def _read_panel_cfg(force_reload=False) -> configparser.ConfigParser:
+    global CONFIG_CACHE
+    if CONFIG_CACHE is None or force_reload:
+        cfg = configparser.ConfigParser()
+        try:
+            with open(PANEL_CONFIG_INI, encoding='utf-8', errors='ignore') as fh:
+                cfg.read_file(fh)
+        except Exception:
+            cfg.read(PANEL_CONFIG_INI)
+        CONFIG_CACHE = cfg
+    return CONFIG_CACHE
 
 def load_layout_buttons(system, btn_count, phys_to_label):
     xml_path = os.path.join(SYSTEMS_DIR, f"{system}.xml")
@@ -418,6 +422,44 @@ def load_game_layout_buttons(system, game_name, btn_count, phys_to_label):
     except Exception as e:
         logger.error(f"Error parsing game XML {path}: {e}")
         return []
+
+def safe_serial_write(ser, cmd, label=""):
+    try:
+        # Mesure du buffer de sortie
+        ow = ser.out_waiting
+        logger.warning(f"⚠ Buffer  ({ow} octets)")
+        if ow > 512:  # seuil à ajuster
+            logger.warning(f"⚠ Buffer série saturé ({ow} octets), envoi ignoré : {label}")
+            return
+        ser.write(cmd.encode('utf-8'))
+        ser.flush()
+        logger.info(f"✅ Sent: {label} (out_waiting={ow})")
+    except Exception as e:
+        logger.error(f"❌ Erreur série lors de l’envoi de '{label}': {e}")
+
+def monitor_serial_buffer(ser):
+    while True:
+        time.sleep(1)
+        try:
+            in_buf = ser.in_waiting
+            out_buf = ser.out_waiting
+            #logger.info(f"[Serial Buffer] IN={in_buf} | OUT={out_buf}")
+            dump = ser.read(ser.in_waiting)
+            #logger.info(f"[SERIAL DUMP] <<< {dump}")
+        except Exception as e:
+            logger.warning(f"[Serial Monitor] Erreur lecture buffer : {e}")
+            break
+
+def read_serial_feedback(ser):
+    while True:
+        try:
+            if ser.in_waiting:
+                lines = ser.read(ser.in_waiting).decode(errors="ignore").splitlines()
+                for line in lines:
+                    logger.debug(f"[PICO REPLY] {line}")
+        except Exception as e:
+            logger.warning(f"[Feedback] Erreur lecture Pico : {e}")
+        time.sleep(0.1)
 
 def find_pico():
     logger.info("🔍 Scanning serial ports for Pico...")
@@ -492,6 +534,7 @@ class LedEventHandler(FileSystemEventHandler):
         with open(tmp, 'w', encoding='utf-8') as fh:
             cfg.write(fh)
         os.replace(tmp, PANEL_CONFIG_INI)
+        CONFIG_CACHE = None
         logger.debug(f"PanelDefaults section now: {dict(cfg.items('PanelDefaults'))}")
 
     def _load_system_layouts(self, system: str) -> None:
@@ -633,7 +676,7 @@ class LedEventHandler(FileSystemEventHandler):
         mapping = ';'.join(f"{lbl}:{clr}" for lbl, clr in entry['buttons'])
         cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
         try:
-            self.ser.write(cmd.encode('utf-8'))
+            safe_serial_write(self.ser, cmd, label=f"{entry['name']} layout")
             logger.info(f"    ➡ Sent ({key} layout) [{saved_idx}] '{entry['name']}'")
         except Exception as e:
             logger.error(f"    Erreur envoi layout pour '{key}': {e}")
@@ -663,7 +706,7 @@ class LedEventHandler(FileSystemEventHandler):
         cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
 
         try:
-            self.ser.write(cmd.encode('utf-8'))
+            safe_serial_write(self.ser, cmd, label=f"{entry['name']} layout")
             logger.info(f"➡ Switched to layout [{self.current_layout_idx}] '{entry['name']}'")
         except Exception as e:
             logger.error(f"Error sending layout: {e}")
@@ -671,6 +714,7 @@ class LedEventHandler(FileSystemEventHandler):
     def on_modified(self, event):
         # Parse EmulationStation event
         ev, system, raw2 = parse_es_event(ES_EVENT_FILE)
+        system = escape_arg_value(system)
         logger.debug(f"on_modified: ev='{ev}', system='{system}' (in_game={self.in_game})")
         # récupérer le nom exact du dossier remaps pour le core système
         emu_sys, core_sys = get_system_emulator(system)
@@ -1057,7 +1101,7 @@ class LedEventHandler(FileSystemEventHandler):
         mapping = ';'.join(f"{lbl}:{clr}" for lbl,clr in btns)
         cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
         try:
-            self.ser.write(cmd.encode('utf-8'))
+            safe_serial_write(self.ser, cmd, label=f"{key} layout")
             logger.info(f"➡ Sent: {cmd.strip()}")
         except Exception as e:
             logger.error(f"Error sending command: {e}")
@@ -1281,6 +1325,7 @@ def joystick_listener(handler):
                                 )
                                 logger.info(f"    ➡ Executing macro: {cmd}")
                                 handler.ser.write((cmd + '\n').encode('utf-8'))
+                                handler.ser.flush()
                                 # on ne traite pas les autres macros pour ce même event
                                 continue
                             if le['macro'] == 'blink_button':
@@ -1291,6 +1336,7 @@ def joystick_listener(handler):
                                 )
                                 logger.info(f"    ➡ Executing macro: {cmd}")
                                 handler.ser.write((cmd + '\n').encode('utf-8'))
+                                handler.ser.flush()
                                 # on ne traite pas les autres macros pour ce même event
                                 continue
                             # --- macro couleur globale ---
@@ -1303,6 +1349,7 @@ def joystick_listener(handler):
 
                             logger.info(f"    ➡ Executing macro: {cmd}")
                             handler.ser.write((cmd + '\n').encode('utf-8'))
+                            handler.ser.flush()
                             break
 
             # — Hat (D-pad en hat) —
@@ -1364,6 +1411,7 @@ def joystick_listener(handler):
                             cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
                             try:
                                 handler.ser.write(cmd.encode('utf-8'))
+                                handler.ser.flush()
                                 logger.info(f"    ➡ Sent (game layout '{entry['name']}')")
                             except Exception as e:
                                 logger.error(f"    Error sending game layout: {e}")
@@ -1377,7 +1425,7 @@ def joystick_listener(handler):
 
                             # 4) Afficher le popup et sortir
                             show_popup_tk(entry['name'])
-                            time.sleep(0.01)
+                            #time.sleep(0.01)
                             continue
 
                         # — Sinon, on retombe sur la logique “système” (pas de jeu actif) —
@@ -1408,7 +1456,7 @@ def joystick_listener(handler):
                         name = handler.system_layouts[handler.current_layout_idx]['name']
                         show_popup_tk(name)
 
-                        time.sleep(0.01)
+                        #time.sleep(0.01)
                         continue
 
 def main():
@@ -1418,6 +1466,7 @@ def main():
     if not pico:
         sys.exit(1)
     ser = serial.Serial(pico, BAUDRATE, timeout=1)
+
     time.sleep(1)
     logger.info(f"Connected to Pico on {pico} @ {BAUDRATE}")
 
@@ -1444,12 +1493,15 @@ def main():
 
     t = threading.Thread(target=joystick_listener, args=(led_handler,), daemon=True)
     t.start()
+    threading.Thread(target=monitor_serial_buffer, args=(ser,), daemon=True).start()
+    threading.Thread(target=read_serial_feedback, args=(ser,), daemon=True).start()
 
     logger.info("Led Panel Color Manager running…")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        observer.stop()
         observer.stop()
     observer.join()
     ser.close()
