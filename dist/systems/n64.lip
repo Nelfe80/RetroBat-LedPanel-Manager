@@ -2,7 +2,7 @@
 <layout game="Nintendo64" version="1.0">
 
   <!-- 3) Réactions aux inputs physiques -->
-  <events type="8-Button" name="Arcade-Shark">
+  <events type="8-Button" name="Arcade-Shark 8B">
     <!-- Quand on appuie sur B8 (R2), on allume en jaune les 4 C-buttons -->
     <event type="input" button="B8" trigger="press">
       <macro type="set_panel_colors">
@@ -13,6 +13,23 @@
 
     <!-- Quand on relâche R2, on restaure l'état initial -->
     <event type="input" button="B8" trigger="release">
+      <macro type="restore_panel">
+        <panel>CURRENT</panel>
+      </macro>
+    </event>
+  </events>
+  
+  <events type="6-Button" name="Arcade-Shark 6B">
+    <!-- Quand on appuie sur B6 (R), on allume en jaune les 4 C-buttons -->
+    <event type="input" button="B6" trigger="press">
+      <macro type="set_panel_colors">
+        <!-- positions B1, B2, B3, B4 (C-up, C-down, C-left, C-right) -->
+        <colors>CURRENT,B1:YELLOW;B2:YELLOW;B3:YELLOW;B4:YELLOW;B5:GRAY;B6:BLACK;B9:GRAY;B10:RED;</colors>
+      </macro>
+    </event>
+
+    <!-- Quand on relâche R2, on restaure l'état initial -->
+    <event type="input" button="B6" trigger="release">
       <macro type="restore_panel">
         <panel>CURRENT</panel>
       </macro>

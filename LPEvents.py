@@ -521,13 +521,20 @@ class LedEventHandler(FileSystemEventHandler):
         return 0
 
     def _save_layout_idx(self, system: str, idx: int) -> None:
+        global CONFIG_CACHE
         cfg = _read_panel_cfg()
         if not cfg.has_section('PanelDefaults'):
             cfg.add_section('PanelDefaults')
             logger.debug("Created PanelDefaults section.")
         name = ''
+        #if 0 <= idx < len(self.system_layouts):
+        #    name = self.system_layouts[idx].get('name', '')
         if 0 <= idx < len(self.system_layouts):
-            name = self.system_layouts[idx].get('name', '')
+            # si un name existe, on le prend, sinon on retombe sur le type (ex. "6-Button")
+            name = (
+                self.system_layouts[idx].get('name')
+                or self.system_layouts[idx].get('type', '')
+            )
         logger.debug(f"Saving idx {idx} (name '{name}') for system '{system}'")
         cfg.set('PanelDefaults', system, name)
         tmp = PANEL_CONFIG_INI + '.tmp'
@@ -638,7 +645,7 @@ class LedEventHandler(FileSystemEventHandler):
         return layouts
 
 
-    def _apply_saved_layout(self, key: str, layouts, idx_attr: str):
+    def _apply_saved_layout(self, key: str, layouts, idx_attr: str, save: bool = True):
         """
         *key*            : chaîne “system” ou “system|game” (pour la clef PanelDefaults)
         *layouts*        : liste <{'name':…, 'buttons': [(label,couleur),…] }>
@@ -657,11 +664,29 @@ class LedEventHandler(FileSystemEventHandler):
         if not layouts:
             return
 
-        # 2) “usurper” self.system_layouts pour que _get_saved_layout_idx​ regarde ici
         prev = self.system_layouts
         self.system_layouts = layouts
 
-        saved_idx = self._get_saved_layout_idx(key)
+        cfg = _read_panel_cfg()
+        # ── FALLBACK SYSTEME : pas d'entrée PanelDefaults → on choisit selon le btn_count du panel ──
+        if not cfg.has_section('PanelDefaults') or not cfg.has_option('PanelDefaults', key):
+            panel_id = self.panel_id
+            btn_cnt = cfg.getint(
+                'Panel',
+                f'player{panel_id}_buttons_count',
+                fallback=cfg.getint('Panel', 'buttons_count', fallback=0)
+            )
+            # trouve l'index du layout "N-Button"
+            saved_idx = next(
+                (i for i, entry in enumerate(layouts)
+                 if entry.get('name') == f"{btn_cnt}-Button"),
+                0
+            )
+        else:
+            # sinon, lecture normale de l'idx sauvegardé
+            saved_idx = self._get_saved_layout_idx(key)
+
+        # ➌ sécurité bornes
         if saved_idx < 0 or saved_idx >= len(layouts):
             saved_idx = 0
         setattr(self, idx_attr, saved_idx)
@@ -681,8 +706,9 @@ class LedEventHandler(FileSystemEventHandler):
         except Exception as e:
             logger.error(f"    Erreur envoi layout pour '{key}': {e}")
 
-        # 4b) Sauvegarde dans config.ini (PanelDefaults)
-        self._save_layout_idx(key, saved_idx)
+        # 4b) Sauvegarde dans config.ini (PanelDefaults) uniquement si demandé
+        if save:
+            self._save_layout_idx(key, saved_idx)
 
         # 5) Restauration
         self.system_layouts = prev
@@ -721,6 +747,8 @@ class LedEventHandler(FileSystemEventHandler):
         remap_folder_sys = get_core_folder_name(core_sys)
         if remap_folder_sys == "Caprice32":
             remap_folder_sys = "cap32"
+        if remap_folder_sys == "Dolphin":
+            remap_folder_sys = "dolphin-emu"
 
         # —————— 1) system-selected: switch system, exit game mode
         if ev == 'system-selected' and (system != self.last_system or self.in_game):
@@ -741,18 +769,24 @@ class LedEventHandler(FileSystemEventHandler):
                 logger.info(f"  Aucun émulateur par défaut défini pour '{system}'")
 
             # Recharge et applique le layout système
-            self._load_system_layouts(system)
-            self._apply_saved_layout(system, self.system_layouts, 'current_layout_idx')
+            plat = get_system_platform(system) or system
+            self.last_system = plat
 
-            self.last_system = system
+            # ➋ Recharge et applique le layout système
+            self._load_system_layouts(plat)
+            self._apply_saved_layout(plat, self.system_layouts, 'current_layout_idx', save=False)
+
             self.lip_events  = []
             return
 
         # —————— 2) game-selected ——————
         if ev == 'game-selected' or self.in_game :
+            logger.info(f"game-selected for system : '{system}'")
             raw2 = escape_arg_value(raw2)
             logger.info(f"  raw2 '{raw2}'")
-            plat = get_system_platform(system)
+            plat = get_system_platform(system) or system
+            self.last_system = plat
+            logger.info(f"game-selected for system : '{system}' - plateform '{plat}'")
             if 'arcade' in plat:
                 logger.info(f"  Plateforme '{plat}' marque arcade → pas de remap généré")
 
@@ -793,6 +827,8 @@ class LedEventHandler(FileSystemEventHandler):
                 remap_folder_game = get_core_folder_name(core_game)
                 if remap_folder_game == "Caprice32":
                     remap_folder_game = "cap32"
+                if remap_folder_game == "Dolphin":
+                    remap_folder_game = "dolphin-emu"
                 logger.info(
                     f"    Jeu '{game}' → emulator={emu_game}, "
                     f"core={core_game}, remaps_folder='{remap_folder_game}'"
@@ -889,8 +925,16 @@ class LedEventHandler(FileSystemEventHandler):
                             return
 
                         try:
-                            tree = ET.parse(xml_to_parse)
-                            root = tree.getroot()
+                            #tree = ET.parse(xml_to_parse)
+                            #root = tree.getroot()
+
+                            tree_sys = ET.parse(xml_to_parse)
+                            root     = tree_sys.getroot()
+                            if os.path.isfile(xml_to_parse):
+                                tree_game = ET.parse(xml_to_parse)
+                                root_game = tree_game.getroot()
+                                for layout in root_game.findall('.//layout'):
+                                    root.append(layout)
 
                             # Nombre de joueurs définis dans config.ini
                             players = cfg.getint('Panel', 'players_count', fallback=1)
@@ -900,7 +944,14 @@ class LedEventHandler(FileSystemEventHandler):
                             # Boucle pour chaque joueur
                             for panel_id in range(1, players + 1):
                                 # 0) vérification d’un fallback layout “system|game” dans config.ini
+                                logger.info(f"#### test")
                                 cfg = _read_panel_cfg()
+                                # 1) Nombre de boutons max pour ce joueur
+                                btn_cfg = cfg.getint(
+                                    'Panel', f'player{panel_id}_buttons_count',
+                                    fallback=cfg.getint('Panel', 'buttons_count', fallback=0)
+                                )
+                                layout_name = f"{btn_cfg}-Button"
                                 game_key = f"{system}|{game}"
                                 if cfg.has_section('PanelDefaults') and cfg.has_option('PanelDefaults', game_key):
                                     saved_game_layout = cfg.get('PanelDefaults', game_key)
@@ -908,15 +959,11 @@ class LedEventHandler(FileSystemEventHandler):
                                         logger.info(f"  Utilisation du layout sauvegardé pour '{game_key}' → '{saved_game_layout}'")
                                         layout_name = saved_game_layout
                                     else:
-                                        logger.debug(f"  Clé '{game_key}' vide dans PanelDefaults – on garde '{layout_name}'")
+                                        logger.debug(f"  Clé '{game_key}' vide – on garde '{layout_name}'")
                                 else:
-                                    logger.debug(f"  Pas de layout jeu-spécifique dans config.ini pour '{game_key}'")
-                                # 1) Nombre de boutons max pour ce joueur
-                                btn_cfg = cfg.getint(
-                                    'Panel', f'player{panel_id}_buttons_count',
-                                    fallback=cfg.getint('Panel', 'buttons_count', fallback=0)
-                                )
+                                    logger.debug(f"  Pas de layout jeu-spécifique pour '{game_key}'")
 
+                                logger.info(f"#### btn_cfg {btn_cfg}")
                                 # 2) Choix du <layout> pour ce player
                                 #    a) tentative par layout_name
                                 layout_elem = root.find(f".//layout[@name='{layout_name}']") or \
@@ -925,6 +972,7 @@ class LedEventHandler(FileSystemEventHandler):
                                 if layout_elem is not None:
                                     try:
                                         pb = int(layout_elem.get('panelButtons', '0'))
+                                        logger.info(f"#### pb {pb}")
                                     except ValueError:
                                         pb = 0
                                     if pb > btn_cfg:
@@ -936,6 +984,7 @@ class LedEventHandler(FileSystemEventHandler):
                                     for le in root.findall('.//layout'):
                                         try:
                                             pb = int(le.get('panelButtons', '0'))
+                                            logger.info(f"####>> pb {pb}")
                                         except ValueError:
                                             continue
                                         if pb <= btn_cfg:
@@ -945,6 +994,7 @@ class LedEventHandler(FileSystemEventHandler):
 
                                 if layout_elem is None:
                                     raise ValueError(f"Aucun <layout> matching '{layout_name}' pour player{panel_id}")
+                                logger.info(f"#### layout_name {layout_name} panel_id {panel_id}")
 
                                 # Nombre de boutons défini dans ce layout (panelButtons)
                                 try:
@@ -952,6 +1002,7 @@ class LedEventHandler(FileSystemEventHandler):
                                 except ValueError:
                                     xml_max = 0
 
+                                logger.info(f"#### xml_max {xml_max}")
                                 # 3) Génération des lignes de config
                                 device    = layout_elem.get('retropad_device', '1')
                                 dpad_mode = layout_elem.get('retropad_analog_dpad_mode', '0')
@@ -1016,15 +1067,23 @@ class LedEventHandler(FileSystemEventHandler):
                         except Exception as e:
                             logger.error(f"  Échec génération fallback remap depuis XML: {e}")
 
+                game_key = f"{system}|{game}"
+                # si aucun layout dédié, on récupère les layouts système
+                layouts = self.game_layouts or self.system_layouts
+                # Utiliser la clé système par défaut si pas de layouts jeu
+                cfg = _read_panel_cfg()
 
-                if self.game_layouts:
-                    # 5) Si on a bien des layouts “jeu”, appliquer et sauvegarder
-                    game_key = f"{system}|{game}"
-                    self._apply_saved_layout(game_key, self.game_layouts, 'current_game_idx')
-                else:
-                    # 6) Sinon : retomber sur le layout système courant
-                    logger.info("    No game-specific layout: reapplying system default")
-                    self._send_current_layout()
+                game_key = f"{system}|{game}"
+                layouts  = self.game_layouts or self.system_layouts
+
+                # On ne veut tomber sur game_key que si c'est explicitement dans PanelDefaults
+                has_game_override = (
+                    cfg.has_section('PanelDefaults')
+                    and cfg.get('PanelDefaults', game_key, fallback='').strip() != ''
+                )
+                key_to_use = game_key if has_game_override else system
+                logger.info(f"key_to_use :{key_to_use} game_key:{game_key} self.game_layouts:{self.game_layouts}")
+                self._apply_saved_layout(key_to_use, layouts, 'current_game_idx', save=False)
 
                 self.lip_events = []
                 return
@@ -1131,30 +1190,36 @@ class LedEventHandler(FileSystemEventHandler):
 
         # 4) parser le .lip et vérifier le type (N-Button)
         try:
-            lip_tree    = ET.parse(lip_path)
-            lip_root    = lip_tree.getroot()
-            evroot      = lip_root.find('events')
-            if evroot is None:
-                logger.warning("No <events> in .lip")
-                return
+            lip_tree = ET.parse(lip_path)
+            lip_root = lip_tree.getroot()
 
-            # ** Nouveau : filtrage sur le name du layout **
-            lip_name = evroot.get('name')  # ex. "Arcade Shark" ou "Keyboard Mapping"
             # on choisit le layout actif : jeu si on est en game-mode, sinon système
             if self.current_game is not None and self.game_layouts:
                 current_layout = self.game_layouts[self.current_game_idx]['name']
             else:
                 current_layout = self.system_layouts[self.current_layout_idx]['name']
 
-            if lip_name and lip_name != current_layout:
-                logger.info(
-                    f"Skipping .lip events: .lip is for layout '{lip_name}' "
-                    f"but current layout is '{current_layout}'"
-                )
+            # parcours de tous les <events> pour trouver celui dont name == current_layout
+            evroot = None
+            logger.info(f"Current layout '{current_layout}'")
+            for ev in lip_root.findall('events'):
+                name = ev.get('name')
+                etype = ev.get('type', '')
+                logger.info(f"Checking <events> name='{name}' type='{etype}'")
+                if name == current_layout or etype == current_layout:
+                    logger.info(f".lip events matching layout {current_layout} = {ev.get('name')}")
+                    evroot = ev
+                    break
+
+            if evroot is None:
+                logger.info(f"No .lip events matching layout '{current_layout}'")
                 return
 
-            lip_type    = evroot.get('type','')           # ex: "8-Button"
-            lip_btn_cnt = int(lip_type.split('-',1)[0])
+            # on a trouvé le bon bloc <events>
+            lip_name = evroot.get('name')           # ex. "Arcade-Shark 6B"
+            lip_type = evroot.get('type', '')       # ex. "6-Button"
+            lip_btn_cnt = int(lip_type.split('-', 1)[0])
+            logger.info(f"layout {lip_name} {lip_type} {lip_btn_cnt} ")
         except Exception as e:
             logger.error(f"Error parsing .lip header: {e}")
             return
@@ -1168,7 +1233,7 @@ class LedEventHandler(FileSystemEventHandler):
         )
 
         # 6) si ça ne correspond pas, on skippe
-        if lip_btn_cnt != panel_btn_cnt:
+        if lip_btn_cnt > panel_btn_cnt:
             logger.info(
                 f"Skipping .lip events: .lip is for {lip_btn_cnt}-Button "
                 f"but current panel has {panel_btn_cnt} buttons"
@@ -1389,43 +1454,101 @@ def joystick_listener(handler):
 
                     # ── On veut uniquement gérer Hotkey+Left/Right hors game-start
                     if not handler.in_game and states[iid].get(HOTKEY_ID, False):
-
-                        # — Si on est dans un menu “jeu” (game-selected) avec des layouts “jeu” chargés :
-                        if handler.current_game is not None and handler.game_layouts:
-                            # 1) Calculer le nouvel index “jeu”
-                            if direction == 'Left':
-                                handler.current_game_idx = (handler.current_game_idx - 1) % len(handler.game_layouts)
-                                logger.info("    ↶ Hotkey+Axis-Left → previous game-layout")
+                        # Si on est dans un menu “jeu” (game-selected) :
+                        if handler.current_game is not None:
+                            # 1) Sélection des layouts et détermination si on doit enregistrer
+                            if handler.game_layouts:
+                                layouts     = handler.game_layouts
+                                idx_attr    = 'current_game_idx'
+                                save_key    = f"{handler.last_system}|{handler.current_game}"
+                                should_save = True
+                                logger.info("Game-specific layouts sélectionnés")
+                            elif handler.system_layouts:
+                                layouts     = handler.system_layouts
+                                idx_attr    = 'current_layout_idx'
+                                save_key    = f"{handler.last_system}|{handler.current_game}"
+                                should_save = True
+                                logger.info(f"Pas de layout jeu → fallback system-layout {handler.last_system} {handler.current_game}")
                             else:
-                                handler.current_game_idx = (handler.current_game_idx + 1) % len(handler.game_layouts)
-                                logger.info("    ↷ Hotkey+Axis-Right → next game-layout")
+                                logger.warning("Aucun layout disponible → abort")
+                                return
 
-                            # 2) Envoyer le SetPanelColors pour ce layout “jeu”
-                            cfg = _read_panel_cfg()
-                            panels = '|'.join(str(i) for i in range(
+                            # 2) Initialisation de l’index selon PanelDefaults
+                            cfg         = _read_panel_cfg()
+                            panel_defs  = cfg['PanelDefaults']
+                            system_key  = handler.last_system or ''
+                            game_key    = f"{system_key}|{handler.current_game}"
+
+
+                            if game_key in panel_defs:
+                                default_type = panel_defs.get(game_key)
+                            elif system_key in panel_defs:
+                                default_type = panel_defs.get(system_key)
+                            else:
+                                default_type = None
+
+
+                            if default_type:
+                                idx = next(
+                                    (i for i, entry in enumerate(layouts)
+                                     if entry.get('name') == default_type or entry.get('type') == default_type),
+                                    0
+                                )
+                            else:
+                                # choisir le layout en fonction du nombre de boutons du panel concerné
+                                cfg      = _read_panel_cfg()
+                                panel_id = handler.panel_id
+                                # récupère playerN_buttons_count ou, à défaut, buttons_count
+                                btn_cnt  = cfg.getint(
+                                    'Panel',
+                                    f'player{panel_id}_buttons_count',
+                                    fallback=cfg.getint('Panel','buttons_count',fallback=0)
+                                )
+                                # trouver l'idx du layout "N-Button"
+                                idx = next(
+                                    (i for i, entry in enumerate(layouts)
+                                     if entry.get('type') == f"{btn_cnt}-Button"),
+                                    0
+                                )
+                            #else:
+                            #    idx = getattr(handler, idx_attr, 0)
+
+
+
+                            setattr(handler, idx_attr, idx)
+
+                            # 3) Navigation circulaire
+                            if direction == 'Left':
+                                idx = (idx - 1) % len(layouts)
+                                logger.info("    ↶ previous layout")
+                            else:
+                                idx = (idx + 1) % len(layouts)
+                                logger.info("    ↷ next layout")
+                            setattr(handler, idx_attr, idx)
+
+                            # 4) Envoi du SetPanelColors
+                            cfg         = _read_panel_cfg()
+                            panels      = '|'.join(str(i) for i in range(
                                 1,
-                                cfg.getint('Panel', 'players_count', fallback=1) + 1
+                                cfg.getint('Panel','players_count',fallback=1) + 1
                             ))
-                            entry = handler.game_layouts[handler.current_game_idx]
-                            mapping = ';'.join(f"{lbl}:{clr}" for lbl, clr in entry['buttons'])
-                            cmd = f"SetPanelColors={panels},{mapping},default=yes\n"
-                            try:
-                                handler.ser.write(cmd.encode('utf-8'))
-                                handler.ser.flush()
-                                logger.info(f"    ➡ Sent (game layout '{entry['name']}')")
-                            except Exception as e:
-                                logger.error(f"    Error sending game layout: {e}")
+                            entry       = layouts[idx]
+                            mapping     = ';'.join(f"{lbl}:{clr}" for lbl, clr in entry['buttons'])
+                            cmd         = f"SetPanelColors={panels},{mapping},default=yes\n"
+                            handler.ser.write(cmd.encode('utf-8'))
+                            handler.ser.flush()
+                            name_or_type = entry.get('name') or entry.get('type')
+                            logger.info(f"    ➡ Sent (layout '{name_or_type}')")
 
-                            # 3) Sauvegarder le nouvel index “jeu” dans config.ini
-                            game_key = f"{handler.last_system}|{handler.current_game}"
-                            prev_sys = handler.system_layouts
-                            handler.system_layouts = handler.game_layouts
-                            handler._save_layout_idx(game_key, handler.current_game_idx)
-                            handler.system_layouts = prev_sys
+                            # 5) Sauvegarde conditionnelle du choix (uniquement pour les layouts jeu)
+                            if should_save:
+                                prev = handler.system_layouts
+                                handler.system_layouts = layouts
+                                handler._save_layout_idx(save_key, idx)
+                                handler.system_layouts = prev
 
-                            # 4) Afficher le popup et sortir
-                            show_popup_tk(entry['name'])
-                            #time.sleep(0.01)
+                            # 6) Popup puis retour au début de la boucle
+                            show_popup_tk(name_or_type)
                             continue
 
                         # — Sinon, on retombe sur la logique “système” (pas de jeu actif) —
