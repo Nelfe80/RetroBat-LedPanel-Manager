@@ -9,7 +9,7 @@ import serial.tools.list_ports
 import xml.etree.ElementTree as ET
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import PatternMatchingEventHandler
 import pygame
 
 import threading
@@ -17,10 +17,12 @@ import tkinter as tk
 import tkinter.font as tkfont
 import ctypes
 from PIL import Image, ImageDraw, ImageFont
+from typing import Dict, Tuple, Optional, List
 
 # Logging
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.WARNING, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+logging.getLogger('watchdog').setLevel(logging.DEBUG)
 
 # Configuration
 BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +58,130 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 ICON_PATH = os.path.join(script_dir, 'images', 'arcadepanel.png')
 if not os.path.exists(ICON_PATH):
     raise FileNotFoundError(f"Icône introuvable : {ICON_PATH}")
+
+# —————————————————————————————————————————————————————————
+# Parsers XML globaux pour es_settings.cfg et es_systems.cfg
+# —————————————————————————————————————————————————————————
+retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
+es_home      = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
+
+_SETTINGS_CFG = os.path.join(es_home, "es_settings.cfg")
+_SYSTEMS_CFG  = os.path.join(es_home, "es_systems.cfg")
+
+# Cache des arbres XML
+try:
+    _settings_tree = ET.parse(_SETTINGS_CFG)
+    _settings_root = _settings_tree.getroot()
+    logger.info(f"Loaded settings XML from {_SETTINGS_CFG}")
+except Exception:
+    _settings_root = None
+    logger.warning(f"Could not parse {_SETTINGS_CFG}, will fallback to systems only")
+
+try:
+    _systems_tree = ET.parse(_SYSTEMS_CFG)
+    _systems_root = _systems_tree.getroot()
+    logger.info(f"Loaded systems XML from {_SYSTEMS_CFG}")
+except Exception:
+    _systems_root = None
+    logger.error(f"Could not parse {_SYSTEMS_CFG}, emulator lookup disabled")
+
+# —————————————————————————————————————————————————————————
+# Cache des fichiers .info de RetroArch
+# —————————————————————————————————————————————————————————
+info_dir = os.path.join(retrobat_root, "emulators", "retroarch", "info")
+_INFO_CACHE = {}
+if os.path.isdir(info_dir):
+    for fname in os.listdir(info_dir):
+        if not fname.lower().endswith(".info"):
+            continue
+        # Déterminer le nom de core (exclut '_libretro.info' si présent)
+        if fname.lower().endswith("_libretro.info"):
+            core_key = fname[:-len("_libretro.info")]
+        else:
+            core_key = fname[:-len(".info")]
+        path = os.path.join(info_dir, fname)
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.lower().startswith("corename"):
+                        parts = line.split("=", 1)[1].strip()
+                        # dépouille les guillemets
+                        if parts.startswith('"') and parts.endswith('"'):
+                            parts = parts[1:-1]
+                        _INFO_CACHE[core_key.lower()] = parts
+                        break
+        except Exception as e:
+            logger.warning(f"Impossible de parser {fname}: {e}")
+else:
+    logger.warning(f"Dossier info introuvable: {info_dir}")
+
+# —————————————————————————————————————————————————————————
+# Cache des gamelists.xml
+# —————————————————————————————————————————————————————————
+_GAMELIST_CACHE = {}
+roms_root = os.path.join(retrobat_root, "roms")
+if os.path.isdir(roms_root):
+    for system in os.listdir(roms_root):
+        gamelist_path = os.path.join(roms_root, system, "gamelist.xml")
+        if os.path.isfile(gamelist_path):
+            try:
+                tree = ET.parse(gamelist_path)
+                root = tree.getroot()
+                _GAMELIST_CACHE[system.lower()] = root
+                logger.info(f"Loaded gamelist for system '{system}'")
+            except Exception as e:
+                logger.warning(f"Failed to parse gamelist.xml for '{system}': {e}")
+else:
+    logger.warning(f"Roms directory not found: {roms_root}")
+_GAME_INDEX = {}  # clé = (system.lower(), game_name) → (emu, core)
+for sys, root in _GAMELIST_CACHE.items():
+    for game in root.findall('game'):
+        name = game.findtext('name','').strip()
+        path = game.findtext('path','').strip()
+        base = os.path.splitext(os.path.basename(path))[0]
+        emu = game.findtext('emulator','').strip()
+        cor = game.findtext('core','').strip()
+        for key in (name, base):
+            _GAME_INDEX[(sys, key)] = (emu, cor)
+
+# —————————————————————————————————————————————————————————
+# 1. Préchargement de tous les XML *système*
+# —————————————————————————————————————————————————————————
+_SYSTEM_CFG_CACHE: Dict[str, ET.Element] = {}
+systems_dir = os.path.join(retrobat_root, "emulationstation", "systems")
+if os.path.isdir(systems_dir):
+    for fname in os.listdir(systems_dir):
+        if not fname.lower().endswith(".xml"):
+            continue
+        key = os.path.splitext(fname)[0].lower()
+        path = os.path.join(systems_dir, fname)
+        try:
+            _SYSTEM_CFG_CACHE[key] = ET.parse(path).getroot()
+            logger.info(f"Cached system XML for '{key}'")
+        except Exception as e:
+            logger.warning(f"Cannot parse system XML '{fname}': {e}")
+else:
+    logger.warning(f"systems_dir introuvable: {systems_dir}")
+
+# —————————————————————————————————————————————————————————
+# 2. Préchargement de tous les XML *jeu*
+# —————————————————————————————————————————————————————————
+_GAME_CFG_CACHE: Dict[Tuple[str,str], ET.Element] = {}
+for system, root in _SYSTEM_CFG_CACHE.items():
+    system_dir = os.path.join(systems_dir, system)
+    if not os.path.isdir(system_dir):
+        continue
+    for fname in os.listdir(system_dir):
+        if not fname.lower().endswith(".xml"):
+            continue
+        game = os.path.splitext(fname)[0]
+        path = os.path.join(system_dir, fname)
+        try:
+            _GAME_CFG_CACHE[(system, game)] = ET.parse(path).getroot()
+            logger.info(f"Cached game XML for '{system}/{game}'")
+        except Exception as e:
+            logger.warning(f"Cannot parse game XML '{system}/{fname}': {e}")
 
 def show_popup_tk(text, duration=600, font_size=24, alpha=0.9):
     """
@@ -158,186 +284,76 @@ def escape_arg_value(s: str) -> str:
 
 def get_system_emulator(system_name: str) -> (str, str):
     """
-    Lit d’abord es_settings.cfg pour l'émulateur et le core utilisateur.
-    S’ils n'existent pas, va chercher dans es_systems.cfg :
-      1) repère le <system><name>system_name</name>
-      2) si pas de <emulators> défini → prend <theme> comme nom d’un autre système
-         et recommence la recherche sur ce système « originel »
-      3) dans <emulators> de ce système, cherche le <core default="true"> …
-         sinon premier <emulator> et premier <core>.
+    Renvoie (emulator, core) en lisant uniquement les arbres déjà parsés.
     """
-    retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
-    es_home       = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
-    settings_cfg  = os.path.join(es_home, "es_settings.cfg")
-    systems_cfg   = os.path.join(es_home, "es_systems.cfg")
-
-    emulator = ""
-    core     = ""
-
-    # 1) Essayer dans es_settings.cfg
-    try:
-        tree = ET.parse(settings_cfg)
-        root = tree.getroot()
-        for s in root.findall('string'):
+    emulator = core = ""
+    # 1) Tentative dans es_settings.cfg
+    if _settings_root is not None:
+        for s in _settings_root.findall('string'):
             n = s.get('name',''); v = s.get('value','')
             if n == f"{system_name}.emulator":
                 emulator = v
             elif n == f"{system_name}.core":
                 core = v
-    except Exception:
-        # fichier absent ou parse error → on tombera sur es_systems.cfg
-        pass
-
-    # 2) S’il manque l’un des deux, ou pour garantir les defaults, on charge es_systems.cfg
-    if not emulator or not core:
-        try:
-            tree = ET.parse(systems_cfg)
-            root = tree.getroot()
-
-            def find_and_parse(sys_elem):
-                """Retourne (emu,core) pour ce <system> ou ('','') si aucun <emulators>."""
-                ems = sys_elem.find('emulators')
-                if ems is None or not ems.findall('emulator'):
-                    return "", ""
-                # a) core default="true"
-                for em in ems.findall('emulator'):
-                    cores = em.find('cores')
-                    if cores is None:
-                        continue
+    # 2) Si l'un manque, on complète depuis es_systems.cfg
+    if (_systems_root is not None) and (not emulator or not core):
+        def find_and_parse(sys_elem):
+            ems = sys_elem.find('emulators')
+            if ems is None: return "", ""
+            # priorité au core default
+            for em in ems.findall('emulator'):
+                cores = em.find('cores')
+                if cores is not None:
                     for co in cores.findall('core'):
                         if co.get('default','').lower() == 'true':
                             return em.get('name',''), co.text.strip()
-                # b) fallback : premier emulator + premier core
-                em = ems.find('emulator')
-                emu_name = em.get('name','') if em is not None else ""
-                core_name = ""
-                if em is not None:
-                    cores = em.find('cores')
-                    if cores is not None and cores.find('core') is not None:
-                        core_name = cores.find('core').text.strip()
-                return emu_name, core_name
-
-            # 2.a) Chercher directement le system_name
-            target = None
-            for sys_elem in root.findall('system'):
-                nm = sys_elem.find('name')
-                if nm is not None and nm.text.strip().lower() == system_name.lower():
-                    target = sys_elem
-                    break
-
-            # 2.b) Si on l'a trouvé et qu'il a des emulators, on parse
-            if target is not None:
-                emu2, core2 = find_and_parse(target)
-                # 2.c) Si liste vide (groupe), on regarde la balise <theme>
+            # fallback premier
+            em = ems.find('emulator')
+            if em is None: return "", ""
+            co = em.find('cores/core')
+            return em.get('name',''), (co.text.strip() if co is not None else "")
+        # chercher le <system>
+        for sys_elem in _systems_root.findall('system'):
+            nm = sys_elem.find('name')
+            if nm is not None and nm.text.strip().lower() == system_name.lower():
+                emu2, core2 = find_and_parse(sys_elem)
+                # si `<theme>` pointe vers un autre système
                 if not emu2 or not core2:
-                    theme = target.find('theme')
-                    if theme is not None and theme.text:
-                        real = theme.text.strip()
-                        # cherche le system originel dont <name> == real
-                        for sys2 in root.findall('system'):
-                            nm2 = sys2.find('name')
-                            if nm2 is not None and nm2.text.strip().lower() == real.lower():
-                                emu2, core2 = find_and_parse(sys2)
+                    theme = sys_elem.find('theme')
+                    if theme is not None:
+                        real = theme.text.strip().lower()
+                        for s2 in _systems_root.findall('system'):
+                            nm2 = s2.find('name')
+                            if nm2 is not None and nm2.text.strip().lower() == real:
+                                emu2, core2 = find_and_parse(s2)
                                 break
-                # on ne remplace que ce qui manquait
-                if not emulator:
-                    emulator = emu2
-                if not core:
-                    core     = core2
-
-        except Exception:
-            # si problème de parsing ou fichier manquant, on laisse emulator/core vides
-            pass
-
+                emulator = emulator or emu2
+                core     = core     or core2
+                break
     return emulator, core
-
-def get_core_folder_name(core_name: str) -> str:
-    """
-    Ouvre le fichier <core_name>_libretro.info dans
-    <RetroBat>/emulators/retroarch/info/ et extrait la ligne :
-        name = "Library Name"
-    pour renvoyer exactement la chaîne entre guillemets,
-    par exemple "MAME 2003 (0.78)".
-    """
-    # 1) Chemin vers le dossier info de RetroArch
-    #    on part de retrobat_root défini en haut du fichier
-    info_dir = os.path.join(retrobat_root,"emulators", "retroarch", "info")
-    info_file = os.path.join(info_dir,f"{core_name}_libretro.info")
-
-    try:
-        with open(info_file, encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if line.lower().startswith("corename"):
-                    # on s'attend à : name = "Library Name"
-                    parts = line.split("=", 1)[1].strip()
-                    # retire les guillemets s'il y en a
-                    if parts.startswith('"') and parts.endswith('"'):
-                        return parts[1:-1]
-                    # sinon on renvoie brut
-                    return parts
-    except FileNotFoundError:
-        logger.warning(f"Info file not found: {info_file}")
-    except Exception as e:
-        logger.error(f"Error parsing info file {info_file}: {e}")
-
-    return ""
 
 def get_system_platform(system_name: str) -> str:
     """
-    Lit es_systems.cfg et renvoie la balise <platform> pour <system><name>system_name</name>.
+    Lit l’arbre systèmes déjà chargé et renvoie la balise <platform>.
     """
-    retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
-    es_home       = os.path.join(retrobat_root, "emulationstation", ".emulationstation")
-    systems_cfg   = os.path.join(es_home, "es_systems.cfg")
-    try:
-        tree = ET.parse(systems_cfg)
-        root = tree.getroot()
-        for sys_elem in root.findall('system'):
-            nm = sys_elem.find('name')
-            if nm is not None and nm.text.strip().lower() == system_name.lower():
-                plat = sys_elem.find('platform')
-                return plat.text.strip().lower() if plat is not None and plat.text else ""
-    except Exception:
-        pass
+    if _systems_root is None:
+        return ""
+    for sys_elem in _systems_root.findall('system'):
+        nm = sys_elem.find('name')
+        if nm is not None and nm.text.strip().lower() == system_name.lower():
+            plat = sys_elem.find('platform')
+            return plat.text.strip().lower() if plat is not None else ""
     return ""
 
-def get_game_emulator(system_name: str, game_name: str) -> (str, str):
+def get_core_folder_name(core_name: str) -> str:
     """
-    Lit <RetroBatRoot>/roms/<system_name>/gamelist.xml et recherche
-    dans chaque <game> l'élément dont <name> ou <path> correspond à <game_name>,
-    puis renvoie (emulator, core) s'il existe une surcharge. Sinon, retourne ("", "").
+    Renvoie la valeur 'name' extraite depuis <core_name>_libretro.info,
+    à partir du cache pré-chargé.
     """
-    retrobat_root = os.path.dirname(os.path.dirname(BASE_DIR))
-    roms_dir = os.path.join(retrobat_root, "roms", system_name)
-    gamelist_path = os.path.join(roms_dir, "gamelist.xml")
+    return _INFO_CACHE.get(core_name.lower(), "")
 
-    emulator, core = "", ""
-    try:
-        tree = ET.parse(gamelist_path)
-        root = tree.getroot()
-        for game_elem in root.findall('game'):
-            name_tag = game_elem.find('name')
-            path_tag = game_elem.find('path')
-            name_val = name_tag.text.strip() if name_tag is not None else ""
-            path_val = path_tag.text.strip() if path_tag is not None else ""
-            base = os.path.splitext(os.path.basename(path_val))[0]
-            if game_name == name_val or game_name == base:
-                em_tag = game_elem.find('emulator')
-                co_tag = game_elem.find('core')
-                if em_tag is not None and em_tag.text:
-                    emulator = em_tag.text.strip()
-                if co_tag is not None and co_tag.text:
-                    core = co_tag.text.strip()
-                break
-        return emulator, core
-    except FileNotFoundError:
-        logger.debug(f"gamelist.xml non trouvé à '{gamelist_path}'")
-        return "", ""
-    except Exception as e:
-        logger.debug(f"Impossible de parser '{gamelist_path}': {e}")
-        return "", ""
-
+def get_game_emulator(system_name, game_name):
+    return _GAME_INDEX.get((system_name.lower(), game_name), ("",""))
 
 def _read_panel_cfg(force_reload=False) -> configparser.ConfigParser:
     global CONFIG_CACHE
@@ -351,14 +367,15 @@ def _read_panel_cfg(force_reload=False) -> configparser.ConfigParser:
         CONFIG_CACHE = cfg
     return CONFIG_CACHE
 
-def load_layout_buttons(system, btn_count, phys_to_label):
-    xml_path = os.path.join(SYSTEMS_DIR, f"{system}.xml")
-    if not os.path.exists(xml_path):
-        logger.warning(f"No XML for system '{system}' at {xml_path}")
+def load_layout_buttons(system: str) -> List[Dict]:
+    root = _SYSTEM_CFG_CACHE.get(system.lower())
+    if root is None:
+        logger.warning(f"No cached XML for system '{system}'")
         return []
     try:
-        tree = ET.parse(xml_path)
-        for layout in tree.findall('.//layout'):
+        root = _SYSTEM_CFG_CACHE.get(system.lower())
+        if not root: return []
+        for layout in root.findall('.//layout'):
             if layout.get('panelButtons') == str(btn_count):
                 out = []
                 joy = layout.find('joystick')
@@ -387,53 +404,23 @@ def parse_es_event(path):
     # on renvoie raw2 pour qu’on puisse déterminer fichier vs dossier
     return ev, system, raw2
 
-def load_game_layout_buttons(system, game_name, btn_count, phys_to_label):
-    path = os.path.join(SYSTEMS_DIR, system, f"{game_name}.xml")
-    if not os.path.exists(path):
-        logger.warning(f"No game XML for '{system}/{game_name}'")
-        return []
-    try:
-        tree = ET.parse(path)
-        # on cherche la section <game name="game_name">
-        game_elem = tree.find(f".//game[@name='{game_name}']")
-        if game_elem is None:
-            logger.warning(f"<game name='{game_name}'> not found in {path}")
-            return []
-        # trouver layout à panelButtons=btn_count
-        layout = game_elem.find(f".//layout[@panelButtons='{btn_count}']")
-        if layout is None:
-            logger.warning(f"No layout[@panelButtons={btn_count}] in {path}")
-            return []
-        out = []
-        # joystick
-        joy = layout.find('joystick')
-        if joy is not None:
-            c = joy.get('color', DEFAULT_COLOR).upper()
-            out.append(('JOY', OFF_COLOR if c=='BLACK' else c))
-        # chaque bouton
-        for btn in layout.findall('button'):
-            phys   = btn.get('physical')
-            label  = btn.get('id','').upper() if btn.get('id','').upper() in ('START','COIN') \
-                     else phys_to_label.get(phys, f"B{phys}")
-            c      = btn.get('color', DEFAULT_COLOR).upper()
-            out.append((label, OFF_COLOR if c=='BLACK' else c))
-        return out
-
-    except Exception as e:
-        logger.error(f"Error parsing game XML {path}: {e}")
-        return []
-
 def safe_serial_write(ser, cmd, label=""):
+    """
+    Vide les buffers d’entrée et de sortie, puis envoie cmd immédiatement.
+    """
     try:
-        # Mesure du buffer de sortie
-        ow = ser.out_waiting
-        logger.warning(f"⚠ Buffer  ({ow} octets)")
-        if ow > 512:  # seuil à ajuster
-            logger.warning(f"⚠ Buffer série saturé ({ow} octets), envoi ignoré : {label}")
-            return
+        # Supprime toute donnée en attente côté Pico (input)…
+        #ser.reset_input_buffer()
+        # …et côté OS (output), si nécessaire
+        #ser.reset_output_buffer()
+        logger.error(f"afe_serial_write")
+    except Exception:
+        # Certains drivers n’ont pas ces méthodes, on ignore
+        pass
+
+    try:
         ser.write(cmd.encode('utf-8'))
-        ser.flush()
-        logger.info(f"✅ Sent: {label} (out_waiting={ow})")
+        #ser.flush()
     except Exception as e:
         logger.error(f"❌ Erreur série lors de l’envoi de '{label}': {e}")
 
@@ -443,9 +430,9 @@ def monitor_serial_buffer(ser):
         try:
             in_buf = ser.in_waiting
             out_buf = ser.out_waiting
-            #logger.info(f"[Serial Buffer] IN={in_buf} | OUT={out_buf}")
+            logger.info(f"[Serial Buffer] IN={in_buf} | OUT={out_buf}")
             dump = ser.read(ser.in_waiting)
-            #logger.info(f"[SERIAL DUMP] <<< {dump}")
+            logger.info(f"[SERIAL DUMP] <<< {dump}")
         except Exception as e:
             logger.warning(f"[Serial Monitor] Erreur lecture buffer : {e}")
             break
@@ -479,10 +466,12 @@ def find_pico():
     return None
 
 
-class LedEventHandler(FileSystemEventHandler):
+class LedEventHandler(PatternMatchingEventHandler):
     def __init__(self, ser, panel_id):
+        super().__init__(patterns=[ES_EVENT_FILE], ignore_directories=True)
         self.ser           = ser
         self.panel_id      = panel_id
+        self.cfg = _read_panel_cfg()
         self.last_system   = None
         self.listening     = False
         self.last_es_event = (None, None, None)
@@ -502,7 +491,7 @@ class LedEventHandler(FileSystemEventHandler):
         self.current_game_idx   = 0     # index du layout actif (jeu)
 
     def _get_saved_layout_idx(self, system: str) -> int:
-        cfg = _read_panel_cfg()
+        cfg = self.cfg
         has_section = cfg.has_section('PanelDefaults')
         logger.debug(f"Fetching saved layout for system '{system}'. Section exists? {has_section}")
         if has_section:
@@ -521,8 +510,8 @@ class LedEventHandler(FileSystemEventHandler):
         return 0
 
     def _save_layout_idx(self, system: str, idx: int) -> None:
-        global CONFIG_CACHE
-        cfg = _read_panel_cfg()
+        #global CONFIG_CACHE
+        cfg = self.cfg
         if not cfg.has_section('PanelDefaults'):
             cfg.add_section('PanelDefaults')
             logger.debug("Created PanelDefaults section.")
@@ -541,7 +530,7 @@ class LedEventHandler(FileSystemEventHandler):
         with open(tmp, 'w', encoding='utf-8') as fh:
             cfg.write(fh)
         os.replace(tmp, PANEL_CONFIG_INI)
-        CONFIG_CACHE = None
+        #CONFIG_CACHE = None
         logger.debug(f"PanelDefaults section now: {dict(cfg.items('PanelDefaults'))}")
 
     def _load_system_layouts(self, system: str) -> None:
@@ -667,7 +656,7 @@ class LedEventHandler(FileSystemEventHandler):
         prev = self.system_layouts
         self.system_layouts = layouts
 
-        cfg = _read_panel_cfg()
+        cfg = self.cfg
         # ── FALLBACK SYSTEME : pas d'entrée PanelDefaults → on choisit selon le btn_count du panel ──
         if not cfg.has_section('PanelDefaults') or not cfg.has_option('PanelDefaults', key):
             panel_id = self.panel_id
@@ -723,7 +712,7 @@ class LedEventHandler(FileSystemEventHandler):
             return
 
         entry = self.system_layouts[self.current_layout_idx]
-        cfg = _read_panel_cfg()
+        cfg = self.cfg
         panels = '|'.join(
             str(i)
             for i in range(1, cfg.getint('Panel', 'players_count', fallback=1) + 1)
@@ -738,6 +727,21 @@ class LedEventHandler(FileSystemEventHandler):
             logger.error(f"Error sending layout: {e}")
 
     def on_modified(self, event):
+        now = time.time()
+        logger.warning(f"START [OBSERVER] on_modified reçu à {now:.3f}")
+        try:
+            mtime = os.path.getmtime(ES_EVENT_FILE)   # en secondes float
+        except Exception:
+            mtime = None
+
+        # 2) Capturer l'instant où on entre dans on_modified
+        now = time.time()
+
+        if mtime is not None:
+            delay = (now - mtime) * 1000
+            logger.warning(f"[WATCHDOG] file-modified → on_modified delay = {delay:.1f} ms")
+        else:
+            logger.warning(f"[WATCHDOG] on_modified without valid mtime")
         # Parse EmulationStation event
         ev, system, raw2 = parse_es_event(ES_EVENT_FILE)
         system = escape_arg_value(system)
@@ -777,6 +781,8 @@ class LedEventHandler(FileSystemEventHandler):
             self._apply_saved_layout(plat, self.system_layouts, 'current_layout_idx', save=False)
 
             self.lip_events  = []
+            now = time.time()
+            logger.warning(f"SYSTEM SELECTED [OBSERVER] on_modified reçu à {now:.3f}")
             return
 
         # —————— 2) game-selected ——————
@@ -855,6 +861,8 @@ class LedEventHandler(FileSystemEventHandler):
                         logger.warning(
                             f"No layouts for '{system}/{game}' → skipping remap generation"
                         )
+                        now = time.time()
+                        logger.warning(f"GAME SELECTED [OBSERVER] on_modified reçu à {now:.3f}")
                         return
                     # Le layout courant (défini par _apply_saved_layout ou fallback)
                     layout_name = (
@@ -922,6 +930,8 @@ class LedEventHandler(FileSystemEventHandler):
 
                         if not os.path.isfile(xml_game) and not os.path.isfile(xml_fallback):
                             logger.warning(f"  Pas de XML jeu ni système trouvé pour '{system}/{game}', skip remap")
+                            now = time.time()
+                            logger.warning(f"GAME SELECTED [OBSERVER] on_modified reçu à {now:.3f}")
                             return
 
                         try:
@@ -1086,6 +1096,8 @@ class LedEventHandler(FileSystemEventHandler):
                 self._apply_saved_layout(key_to_use, layouts, 'current_game_idx', save=False)
 
                 self.lip_events = []
+                now = time.time()
+                logger.warning(f"GAME SELECTED [OBSERVER] on_modified reçu à {now:.3f}")
                 return
 
         # —————— 3) game-start → enable listening and load .lip macros
@@ -1114,6 +1126,8 @@ class LedEventHandler(FileSystemEventHandler):
 
             self._load_lip(system, game)
             logger.debug(f"lip_events after load: {self.lip_events}")
+            now = time.time()
+            logger.warning(f"GAME START [OBSERVER] on_modified reçu à {now:.3f}")
             return
 
         # —————— 4) implicit game-end on new selection
@@ -1225,7 +1239,7 @@ class LedEventHandler(FileSystemEventHandler):
             return
 
         # 5) lire le panelButtons configuré dans config.ini
-        cfg = _read_panel_cfg()
+        cfg = self.cfg
         panel_btn_cnt = cfg.getint(
             'Panel',
             'Player1_buttons_count',
@@ -1389,8 +1403,7 @@ def joystick_listener(handler):
                                     f"{le['target']},{le['color']}"
                                 )
                                 logger.info(f"    ➡ Executing macro: {cmd}")
-                                handler.ser.write((cmd + '\n').encode('utf-8'))
-                                handler.ser.flush()
+                                safe_serial_write(handler.ser, cmd + '\n', label="joystick")
                                 # on ne traite pas les autres macros pour ce même event
                                 continue
                             if le['macro'] == 'blink_button':
@@ -1400,8 +1413,7 @@ def joystick_listener(handler):
                                     f"{le['target']},{le['color1']},{le['color2']},{le['timecolor1']},{le['timecolor2']}"
                                 )
                                 logger.info(f"    ➡ Executing macro: {cmd}")
-                                handler.ser.write((cmd + '\n').encode('utf-8'))
-                                handler.ser.flush()
+                                safe_serial_write(handler.ser, cmd + '\n', label="joystick")
                                 # on ne traite pas les autres macros pour ce même event
                                 continue
                             # --- macro couleur globale ---
@@ -1413,8 +1425,7 @@ def joystick_listener(handler):
                                 cmd       = f"RestorePanel={panel_arg}"
 
                             logger.info(f"    ➡ Executing macro: {cmd}")
-                            handler.ser.write((cmd + '\n').encode('utf-8'))
-                            handler.ser.flush()
+                            safe_serial_write(handler.ser, cmd + '\n', label="joystick")
                             break
 
             # — Hat (D-pad en hat) —
@@ -1535,17 +1546,22 @@ def joystick_listener(handler):
                             entry       = layouts[idx]
                             mapping     = ';'.join(f"{lbl}:{clr}" for lbl, clr in entry['buttons'])
                             cmd         = f"SetPanelColors={panels},{mapping},default=yes\n"
-                            handler.ser.write(cmd.encode('utf-8'))
-                            handler.ser.flush()
+                            safe_serial_write(handler.ser, cmd + '\n', label="joystick")
                             name_or_type = entry.get('name') or entry.get('type')
                             logger.info(f"    ➡ Sent (layout '{name_or_type}')")
 
                             # 5) Sauvegarde conditionnelle du choix (uniquement pour les layouts jeu)
                             if should_save:
-                                prev = handler.system_layouts
-                                handler.system_layouts = layouts
-                                handler._save_layout_idx(save_key, idx)
-                                handler.system_layouts = prev
+                                #prev = handler.system_layouts
+                                #handler.system_layouts = layouts
+                                #handler._save_layout_idx(save_key, idx)
+                                #handler.system_layouts = prev
+                                threading.Thread(
+                                    target=handler._save_layout_idx,
+                                    args=(save_key, idx),
+                                    daemon=True
+                                ).start()
+
 
                             # 6) Popup puis retour au début de la boucle
                             show_popup_tk(name_or_type)
@@ -1581,6 +1597,14 @@ def joystick_listener(handler):
 
                         #time.sleep(0.01)
                         continue
+import time
+orig_on_modified = LedEventHandler.on_modified
+def profiled_on_modified(self, event):
+    t0 = time.perf_counter()
+    orig_on_modified(self, event)
+    dt = (time.perf_counter() - t0)*1000
+    logger.warning(f"[PROFILE] on_modified took {dt:.1f} ms")
+LedEventHandler.on_modified = profiled_on_modified
 
 def main():
     cfg = _read_panel_cfg()
@@ -1588,7 +1612,7 @@ def main():
     pico = find_pico()
     if not pico:
         sys.exit(1)
-    ser = serial.Serial(pico, BAUDRATE, timeout=1)
+    ser = serial.Serial(pico, BAUDRATE, timeout=1, write_timeout=0)
 
     time.sleep(1)
     logger.info(f"Connected to Pico on {pico} @ {BAUDRATE}")
@@ -1603,16 +1627,18 @@ def main():
     init_cmd = f"INIT=panel={panel_id},count={btn_cnt},select={coin_ch},start={start_ch},joy={joy_ch}\n"
     try:
         ser.write(init_cmd.encode('utf-8'))
+        #ser.flush()
         logger.info(f"➡ Sent INIT: {init_cmd.strip()}")
     except Exception as e:
         logger.error(f"Failed to send INIT: {e}")
 
     logger.info(f"Config: players={cfg.getint('Panel','players_count',fallback=1)}, Player1_buttons_count={btn_cnt}")
-
-    observer    = Observer()
     led_handler = LedEventHandler(ser, panel_id)
+    observer = Observer(timeout=0.1)  # passe de 1 s à 100 ms
     observer.schedule(led_handler, os.path.dirname(ES_EVENT_FILE), recursive=False)
     observer.start()
+    logger.info(f"Observer class   : {type(observer).__name__}")
+    logger.info(f"Emitter class    : {observer._emitter_class.__name__}")
 
     t = threading.Thread(target=joystick_listener, args=(led_handler,), daemon=True)
     t.start()
@@ -1622,8 +1648,9 @@ def main():
     logger.info("Led Panel Color Manager running…")
     try:
         while True:
-            time.sleep(1)
+            time.sleep(0.1)
     except KeyboardInterrupt:
+        observer.stop()
         observer.stop()
         observer.stop()
     observer.join()
